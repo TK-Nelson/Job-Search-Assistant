@@ -1,0 +1,53 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python backend
+backend/.venv/
+backend/**/__pycache__/
+backend/**/*.py[cod]
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/.ruff_cache/
+backend/.coverage
+backend/htmlcov/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.crt
+*.cer
+*.der
+*.jks
+*.keystore
+
+# Local runtime data and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+logs/
+data/
+artifacts/
+backups/
+tmp/
+temp/
+
+# Optional local app data mirrors (if created under repo)
+config/app_config.json
+
+# Build artifacts
+*.egg-info/
+*.whl

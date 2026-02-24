@@ -1,0 +1,21 @@
+{
+  "name": "job-search-assistant-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --force",
+    "clean": "node -e \"const fs=require('fs'); const p='node_modules/.vite'; if(fs.existsSync(p)){fs.rmSync(p,{recursive:true,force:true}); console.log('Removed '+p);} else {console.log('No Vite cache found.');}\"",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "^0.575.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.7.1"
+  },
+  "devDependencies": {
+    "vite": "^7.0.6"
+  }
+}
