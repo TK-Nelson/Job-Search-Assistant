@@ -1,7 +1,36 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import {
+  Alert,
+  Anchor,
+  Autocomplete,
+  Breadcrumbs,
+  Button,
+  FileInput,
+  Group,
+  Paper,
+  Select,
+  SimpleGrid,
+  Stack,
+  Table,
+  Text,
+  TextInput,
+  Textarea,
+  Title,
+} from "@mantine/core";
+import { AlertCircle, Info } from "lucide-react";
 
-import { getCompanies, getDashboardSummary, getFetchRuns, getResumes, runComparison, runFetchNow, uploadResume } from "../api";
+import {
+  getCompanies,
+  getDashboardSummary,
+  getFetchRuns,
+  getResumeDiagnostics,
+  getResumes,
+  runComparison,
+  runFetchNow,
+  scrapeComparisonUrl,
+  uploadResume,
+} from "../api";
 
 const QUEUED_FETCH_KEY = "job_assistant.fetch_run_queued";
 
@@ -23,11 +52,13 @@ export default function DashboardPage() {
   const [companies, setCompanies] = useState([]);
   const [resumes, setResumes] = useState([]);
   const [comparisonForm, setComparisonForm] = useState({
+    sourceType: "online",
     sourceText: "",
     sourceUrl: "",
     title: "",
     descriptionText: "",
     resumeVersionId: "",
+    evaluationMode: "chatgpt_api",
   });
   const [uploadFile, setUploadFile] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -35,6 +66,7 @@ export default function DashboardPage() {
   const [isLoadingRuns, setIsLoadingRuns] = useState(true);
   const [isRunningComparison, setIsRunningComparison] = useState(false);
   const [isUploadingResume, setIsUploadingResume] = useState(false);
+  const [isScrapingComparisonUrl, setIsScrapingComparisonUrl] = useState(false);
 
   async function loadSummary() {
     try {
@@ -208,17 +240,25 @@ export default function DashboardPage() {
     setStatus("Running job description comparison...");
 
     try {
+      const selectedResumeId = Number(comparisonForm.resumeVersionId);
+      const diagnostics = await getResumeDiagnostics(selectedResumeId);
+      if (!String(diagnostics?.extracted_text || "").trim()) {
+        setStatus("Warning: selected resume has empty extracted text. Choose a different resume or upload/paste a new one.");
+        return;
+      }
+
       const payload = {
         source_company_id: selectedCompany ? selectedCompany.id : undefined,
         source_company_name: selectedCompany ? undefined : sourceText,
         source_url: (comparisonForm.sourceUrl || "").trim() || undefined,
         title: (comparisonForm.title || "").trim() || "Untitled role",
         description_text: comparisonForm.descriptionText,
-        resume_version_id: Number(comparisonForm.resumeVersionId),
+        resume_version_id: selectedResumeId,
+        evaluation_mode: comparisonForm.evaluationMode || "chatgpt_api",
       };
       const result = await runComparison(payload);
-      setStatus("Comparison complete. Opening report...");
-      navigate(`/comparisons/${result.comparison_report_id}`);
+      setStatus(`Comparison complete via ${result.evaluation_source === "chatgpt_api" ? "Chat GPT" : "local engine"}. Opening report...`);
+      navigate(`/postings/reports/${result.comparison_report_id}`);
     } catch (err) {
       setStatus(`Comparison failed: ${err.message}`);
     } finally {
@@ -226,243 +266,276 @@ export default function DashboardPage() {
     }
   }
 
+  async function onScrapeComparisonUrl() {
+    const sourceUrl = (comparisonForm.sourceUrl || "").trim();
+    if (!sourceUrl) {
+      setStatus("Enter a URL first, then click Scrape URL.");
+      return;
+    }
+
+    setIsScrapingComparisonUrl(true);
+    setStatus("Scraping URL for role details...");
+    try {
+      const result = await scrapeComparisonUrl(sourceUrl);
+      setComparisonForm((current) => ({
+        ...current,
+        sourceText: current.sourceText || result.inferred_company_name || "",
+        title: current.title || result.inferred_title || "",
+        descriptionText: result.description_text || current.descriptionText,
+      }));
+      setStatus(
+        `Scraped ${result.extracted_characters} characters from URL${result.truncation_applied ? " (truncated for size)." : "."}`
+      );
+    } catch (err) {
+      setStatus(`URL scrape failed: ${err.message}`);
+    } finally {
+      setIsScrapingComparisonUrl(false);
+    }
+  }
+
   const latest = runs[0];
   const statusTone = getStatusTone(status);
+  const statusColor = statusTone === "error" ? "red" : statusTone === "warning" ? "yellow" : statusTone === "success" ? "teal" : "blue";
+  const companyOptions = companies.map((company) => ({ value: company.name, label: company.name }));
+  const resumeOptions = resumes.map((resume) => ({
+    value: String(resume.id),
+    label: `${resume.source_name} (${resume.version_tag})`,
+  }));
 
   return (
-    <div className="panel">
-      <h2>Dashboard</h2>
-      <p className="muted">Fetch pipeline status and direct job-description comparison workflow.</p>
+    <Stack gap="md">
+      <Breadcrumbs>
+        <Anchor component={Link} to="/dashboard">Dashboard</Anchor>
+        <Text size="sm">Overview</Text>
+      </Breadcrumbs>
 
-      <div className="actions">
-        <button onClick={onRunNow} disabled={isRunningNow}>
-          {isRunningNow ? "Running..." : "Run fetch now"}
-        </button>
-        <button onClick={onRefresh} disabled={isRefreshing || isRunningNow}>
-          {isRefreshing ? "Refreshing..." : "Refresh"}
-        </button>
-        {!isOnline && <span className="muted">Offline</span>}
-      </div>
+      <Paper withBorder p="lg" radius="md">
+      <Title order={2}>Dashboard</Title>
+      <Text c="dimmed" size="sm">Fetch pipeline status and direct job-description comparison workflow.</Text>
 
-      {status && <p className={`status status--${statusTone}`}>{status}</p>}
+      <Group mt="md">
+        <Button onClick={onRunNow} loading={isRunningNow}>Run fetch now</Button>
+        <Button variant="light" onClick={onRefresh} loading={isRefreshing} disabled={isRunningNow}>Refresh</Button>
+        {!isOnline && <Text c="dimmed" size="sm">Offline</Text>}
+      </Group>
+
+      {status && (
+        <Alert mt="md" color={statusColor} icon={statusTone === "error" ? <AlertCircle size={16} /> : <Info size={16} />} variant="light">
+          {status}
+        </Alert>
+      )}
 
       <div className="dashboard-grid">
         <section className="dashboard-main">
-          <div className="card">
-            <div className="card-label">New Roles From Followed</div>
-            <div className="card-value">{summary?.new_roles_from_followed_last_run ?? 0}</div>
-            <div className="muted small-text">
+          <Paper withBorder p="md" radius="md">
+            <Text fw={600} size="sm">New Roles From Followed</Text>
+            <Title order={3}>{summary?.new_roles_from_followed_last_run ?? 0}</Title>
+            <Text c="dimmed" size="sm">
               {summary?.latest_fetch_run_id
                 ? `From fetch run #${summary.latest_fetch_run_id}${summary.latest_fetch_completed_at ? ` (${summary.latest_fetch_completed_at})` : ""}`
                 : "No completed fetch run yet."}
-            </div>
-          </div>
+            </Text>
+          </Paper>
 
           {summary && (
-            <section className="cards-grid">
-              <div className="card">
-                <div className="card-label">Applications</div>
-                <div className="card-value">{summary.applications_total_count}</div>
-              </div>
-              <div className="card">
-                <div className="card-label">Followed Companies</div>
-                <div className="card-value">{summary.followed_companies_count}</div>
-              </div>
-              <div className="card">
-                <div className="card-label">Active Postings</div>
-                <div className="card-value">{summary.active_postings_count}</div>
-              </div>
-              <div className="card">
-                <div className="card-label">New Postings (7d)</div>
-                <div className="card-value">{summary.recent_postings_count_7d}</div>
-              </div>
-            </section>
+            <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} mt="md">
+              <Paper withBorder p="md" radius="md"><Text c="dimmed" size="sm">Applications</Text><Title order={4}>{summary.applications_total_count}</Title></Paper>
+              <Paper withBorder p="md" radius="md"><Text c="dimmed" size="sm">Followed Companies</Text><Title order={4}>{summary.followed_companies_count}</Title></Paper>
+              <Paper withBorder p="md" radius="md"><Text c="dimmed" size="sm">Active Postings</Text><Title order={4}>{summary.active_postings_count}</Title></Paper>
+              <Paper withBorder p="md" radius="md"><Text c="dimmed" size="sm">New Postings (7d)</Text><Title order={4}>{summary.recent_postings_count_7d}</Title></Paper>
+            </SimpleGrid>
           )}
 
           {summary && (
-            <section className="panel nested">
-              <h3>Applications by Stage</h3>
+            <Paper withBorder p="md" radius="md" mt="md">
+              <Text fw={600} mb="xs">Applications by Stage</Text>
               {summary.applications_by_stage.length > 0 ? (
-                <div className="kv-grid">
+                <SimpleGrid cols={{ base: 1, sm: 2 }}>
                   {summary.applications_by_stage.map((item) => (
-                    <div key={item.stage}>
-                      <strong>{item.stage}:</strong> {item.count}
-                    </div>
+                    <Text key={item.stage}><Text component="span" fw={600}>{item.stage}:</Text> {item.count}</Text>
                   ))}
-                </div>
+                </SimpleGrid>
               ) : (
-                <p>No applications yet.</p>
+                <Text>No applications yet.</Text>
               )}
-            </section>
+            </Paper>
           )}
 
-          <section className="panel nested">
-            <h3>Latest Fetch Run</h3>
+          <Paper withBorder p="md" radius="md" mt="md">
+            <Text fw={600} mb="xs">Latest Fetch Run</Text>
             {latest ? (
-              <div className="kv-grid">
-                <div>
-                  <strong>Run ID:</strong> {latest.id}
-                </div>
-                <div>
-                  <strong>Status:</strong> {latest.status}
-                </div>
-                <div>
-                  <strong>Started:</strong> {latest.started_at}
-                </div>
-                <div>
-                  <strong>Completed:</strong> {latest.completed_at || "-"}
-                </div>
-                <div>
-                  <strong>Companies Checked:</strong> {latest.companies_checked}
-                </div>
-                <div>
-                  <strong>New/Updated/Skipped/Filtered:</strong> {latest.postings_new}/{latest.postings_updated}/{latest.postings_skipped}/{latest.postings_filtered_out || 0}
-                </div>
-              </div>
+              <SimpleGrid cols={{ base: 1, sm: 2 }}>
+                <Text><Text component="span" fw={600}>Run ID:</Text> {latest.id}</Text>
+                <Text><Text component="span" fw={600}>Status:</Text> {latest.status}</Text>
+                <Text><Text component="span" fw={600}>Started:</Text> {latest.started_at}</Text>
+                <Text><Text component="span" fw={600}>Completed:</Text> {latest.completed_at || "-"}</Text>
+                <Text><Text component="span" fw={600}>Companies Checked:</Text> {latest.companies_checked}</Text>
+                <Text><Text component="span" fw={600}>New/Updated/Skipped/Filtered:</Text> {latest.postings_new}/{latest.postings_updated}/{latest.postings_skipped}/{latest.postings_filtered_out || 0}</Text>
+              </SimpleGrid>
             ) : (
-              <p>No fetch runs yet.</p>
+              <Text>No fetch runs yet.</Text>
             )}
-          </section>
+          </Paper>
 
-          <section className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Status</th>
-                  <th>Started</th>
-                  <th>Completed</th>
-                  <th>Companies</th>
-                  <th>New</th>
-                  <th>Updated</th>
-                  <th>Skipped</th>
-                  <th>Filtered</th>
-                  <th>Errors</th>
-                </tr>
-              </thead>
-              <tbody>
+          <Table.ScrollContainer minWidth={1100} mt="md">
+            <Table striped highlightOnHover withTableBorder withColumnBorders>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>ID</Table.Th>
+                  <Table.Th>Status</Table.Th>
+                  <Table.Th>Started</Table.Th>
+                  <Table.Th>Completed</Table.Th>
+                  <Table.Th>Companies</Table.Th>
+                  <Table.Th>New</Table.Th>
+                  <Table.Th>Updated</Table.Th>
+                  <Table.Th>Skipped</Table.Th>
+                  <Table.Th>Filtered</Table.Th>
+                  <Table.Th>Errors</Table.Th>
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
                 {runs.map((run) => (
-                  <tr key={run.id}>
-                    <td>{run.id}</td>
-                    <td>{run.status}</td>
-                    <td>{run.started_at}</td>
-                    <td>{run.completed_at || "-"}</td>
-                    <td>{run.companies_checked}</td>
-                    <td>{run.postings_new}</td>
-                    <td>{run.postings_updated}</td>
-                    <td>{run.postings_skipped}</td>
-                    <td>{run.postings_filtered_out || 0}</td>
-                    <td>{run.errors_json}</td>
-                  </tr>
+                  <Table.Tr key={run.id}>
+                    <Table.Td>{run.id}</Table.Td>
+                    <Table.Td>{run.status}</Table.Td>
+                    <Table.Td>{run.started_at}</Table.Td>
+                    <Table.Td>{run.completed_at || "-"}</Table.Td>
+                    <Table.Td>{run.companies_checked}</Table.Td>
+                    <Table.Td>{run.postings_new}</Table.Td>
+                    <Table.Td>{run.postings_updated}</Table.Td>
+                    <Table.Td>{run.postings_skipped}</Table.Td>
+                    <Table.Td>{run.postings_filtered_out || 0}</Table.Td>
+                    <Table.Td>{run.errors_json}</Table.Td>
+                  </Table.Tr>
                 ))}
                 {isLoadingRuns && (
-                  <tr>
-                    <td colSpan={10}>Loading run history...</td>
-                  </tr>
+                  <Table.Tr>
+                    <Table.Td colSpan={10}>Loading run history...</Table.Td>
+                  </Table.Tr>
                 )}
                 {runs.length === 0 && !isLoadingRuns && (
-                  <tr>
-                    <td colSpan={10}>No run history yet.</td>
-                  </tr>
+                  <Table.Tr>
+                    <Table.Td colSpan={10}>No run history yet.</Table.Td>
+                  </Table.Tr>
                 )}
-              </tbody>
-            </table>
-          </section>
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
         </section>
 
-        <aside className="dashboard-rail panel nested">
-          <h3>Job Description Comparison</h3>
-          <p className="muted">Paste a role description and evaluate it against a selected resume version.</p>
+        <Paper withBorder p="md" radius="md" className="dashboard-rail">
+          <Text fw={600}>Job Description Comparison</Text>
+          <Text c="dimmed" size="sm">Paste a role description and evaluate it against a selected resume version.</Text>
 
-          <form className="grid" onSubmit={onRunComparison}>
-            <label>
-              Source
-              <input
-                list="company-sources"
-                value={comparisonForm.sourceText}
-                onChange={(event) => updateComparisonField("sourceText", event.target.value)}
+          <form onSubmit={onRunComparison}>
+            <Stack mt="sm">
+              <Select
+                label="Source"
+                value={comparisonForm.sourceType}
+                onChange={(value) => updateComparisonField("sourceType", value || "online")}
+                disabled={isRunningComparison}
+                data={[
+                  { value: "online", label: "Online Job Listing" },
+                  { value: "recruiter", label: "Recruiter" },
+                ]}
+                allowDeselect={false}
+              />
+
+              <Autocomplete
+                label="Company Name"
+                data={companyOptions}
+                value={comparisonForm.sourceText || ""}
+                onChange={(value) => updateComparisonField("sourceText", value || "")}
                 placeholder="Type or select company"
                 disabled={isRunningComparison}
               />
-              <datalist id="company-sources">
-                {companies.map((company) => (
-                  <option key={company.id} value={company.name} />
-                ))}
-              </datalist>
-            </label>
 
-            <label>
-              URL
-              <input
-                type="url"
-                value={comparisonForm.sourceUrl}
-                onChange={(event) => updateComparisonField("sourceUrl", event.target.value)}
-                placeholder="https://..."
+              <Select
+                label="Evaluation mode"
+                value={comparisonForm.evaluationMode}
+                onChange={(value) => updateComparisonField("evaluationMode", value || "chatgpt_api")}
                 disabled={isRunningComparison}
+                data={[
+                  { value: "chatgpt_api", label: "Manual Chat GPT" },
+                  { value: "local_engine", label: "Run locally" },
+                ]}
+                allowDeselect={false}
               />
-            </label>
 
-            <label>
-              Role title
-              <input
+              {comparisonForm.sourceType === "online" && (
+                <Group align="end">
+                  <TextInput
+                    style={{ flex: 1 }}
+                    type="url"
+                    label="URL"
+                    value={comparisonForm.sourceUrl}
+                    onChange={(event) => updateComparisonField("sourceUrl", event.target.value)}
+                    placeholder="https://..."
+                    disabled={isRunningComparison || isScrapingComparisonUrl}
+                  />
+                  <Button
+                    type="button"
+                    variant="light"
+                    onClick={onScrapeComparisonUrl}
+                    loading={isScrapingComparisonUrl}
+                    disabled={isRunningComparison || isUploadingResume}
+                  >
+                    Scrape URL
+                  </Button>
+                </Group>
+              )}
+
+              <TextInput
+                label="Role title"
                 value={comparisonForm.title}
                 onChange={(event) => updateComparisonField("title", event.target.value)}
                 placeholder="Backend Engineer"
                 disabled={isRunningComparison}
               />
-            </label>
 
-            <label>
-              Job description
-              <textarea
-                className="prompt-box"
+              <Textarea
+                label="Job description"
                 rows={10}
                 value={comparisonForm.descriptionText}
                 onChange={(event) => updateComparisonField("descriptionText", event.target.value)}
                 placeholder="Paste full job description"
                 disabled={isRunningComparison}
               />
-            </label>
 
-            <label>
-              Compare against resume
-              <select
-                value={comparisonForm.resumeVersionId}
-                onChange={(event) => updateComparisonField("resumeVersionId", event.target.value)}
+              <Select
+                label="Compare against resume"
+                placeholder="Select resume"
+                data={resumeOptions}
+                value={comparisonForm.resumeVersionId || null}
+                onChange={(value) => updateComparisonField("resumeVersionId", value || "")}
                 disabled={isRunningComparison || isUploadingResume}
-              >
-                <option value="">Select resume</option>
-                {resumes.map((resume) => (
-                  <option key={resume.id} value={resume.id}>
-                    {resume.source_name} ({resume.version_tag})
-                  </option>
-                ))}
-              </select>
-            </label>
+              />
 
-            <div className="upload-inline">
-              <label>
-                Or upload new DOCX
-                <input
-                  type="file"
+              <Group align="end">
+                <FileInput
+                  style={{ flex: 1 }}
+                  label="Or upload new DOCX"
+                  placeholder="Select .docx file"
                   accept=".docx"
-                  onChange={(event) => setUploadFile(event.target.files?.[0] || null)}
+                  onChange={setUploadFile}
+                  value={uploadFile}
                   disabled={isUploadingResume || isRunningComparison}
                 />
-              </label>
-              <button type="button" onClick={onUploadResumeInline} disabled={isUploadingResume || isRunningComparison || !uploadFile}>
-                {isUploadingResume ? "Uploading..." : "Upload & Select"}
-              </button>
-            </div>
+                <Button type="button" onClick={onUploadResumeInline} loading={isUploadingResume} disabled={isRunningComparison || !uploadFile}>
+                  Upload & Select
+                </Button>
+              </Group>
 
-            <div className="actions">
-              <button type="submit" disabled={isRunningComparison || isUploadingResume}>
-                {isRunningComparison ? "Evaluating..." : "Run Evaluation"}
-              </button>
-            </div>
+              <Group>
+                <Button type="submit" loading={isRunningComparison} disabled={isUploadingResume}>
+                  Run Evaluation
+                </Button>
+              </Group>
+            </Stack>
           </form>
-        </aside>
+        </Paper>
       </div>
-    </div>
+      </Paper>
+    </Stack>
   );
 }

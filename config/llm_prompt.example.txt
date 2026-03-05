@@ -1,0 +1,18 @@
+Evaluate the resume against the job description.
+
+Return JSON only.
+Your output MUST validate against this JSON Schema exactly:
+{schema_json}
+
+Scoring rules:
+- overall_fit_score must be 1-100.
+- Use these strategic ratings exactly: Strong Fit, Partial Fit, No Fit.
+- Use these requirement strengths exactly: Strong, Moderate, Weak, Missing.
+- overall_fit_score weighting guidance: Seniority 25%, Domain 25%, Hard Skills 25%, Positioning 15%, Soft Skills 10%.
+- Do not include markdown, code fences, comments, or keys not in schema.
+
+Resume:
+{resume_text}
+
+Job Description:
+{posting_text}

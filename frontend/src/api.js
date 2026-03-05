@@ -1,4 +1,5 @@
 const API_BASE = "http://localhost:8000/api/v1";
+const API_BASE_FALLBACK = "http://localhost:8001/api/v1";
 
 async function handleResponse(response) {
   const body = await response.json().catch(() => ({}));
@@ -23,6 +24,18 @@ export function saveSettings(payload) {
 export function validatePaths(payload) {
   return fetch(`${API_BASE}/settings/validate-paths`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then(handleResponse);
+}
+
+export function getPersonalProfile() {
+  return fetch(`${API_BASE}/settings/personal-profile`).then(handleResponse);
+}
+
+export function savePersonalProfile(payload) {
+  return fetch(`${API_BASE}/settings/personal-profile`, {
+    method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   }).then(handleResponse);
@@ -59,6 +72,18 @@ export function deleteCompany(companyId) {
   }).then(handleResponse);
 }
 
+export function refreshCompanyLogo(companyId) {
+  return fetch(`${API_BASE}/companies/${companyId}/refresh-logo`, {
+    method: "POST",
+  }).then(handleResponse);
+}
+
+export function refreshAllCompanyLogos() {
+  return fetch(`${API_BASE}/companies/refresh-all-logos`, {
+    method: "POST",
+  }).then(handleResponse);
+}
+
 export function runFetchNow() {
   return fetch(`${API_BASE}/fetch/run-now`, {
     method: "POST",
@@ -85,6 +110,22 @@ export function getJobPostings({ companyId, status = "active", sort = "freshness
 
 export function getJobPosting(postingId) {
   return fetch(`${API_BASE}/job-postings/${postingId}`).then(handleResponse);
+}
+
+export function deleteJobPosting(postingId) {
+  const path = `/job-postings/${postingId}`;
+  return fetch(`${API_BASE}${path}`, {
+    method: "DELETE",
+  }).then(async (response) => {
+    if (response.status !== 405) {
+      return handleResponse(response);
+    }
+
+    const fallback = await fetch(`${API_BASE_FALLBACK}${path}`, {
+      method: "DELETE",
+    });
+    return handleResponse(fallback);
+  });
 }
 
 export function getResumes() {
@@ -182,6 +223,12 @@ export function updateApplication(applicationId, payload) {
   }).then(handleResponse);
 }
 
+export function deleteApplication(applicationId) {
+  return fetch(`${API_BASE}/applications/${applicationId}`, {
+    method: "DELETE",
+  }).then(handleResponse);
+}
+
 export function updateApplicationStage(applicationId, payload) {
   return fetch(`${API_BASE}/applications/${applicationId}/stage`, {
     method: "POST",
@@ -222,6 +269,14 @@ export function runComparison(payload) {
   }).then(handleResponse);
 }
 
+export function scrapeComparisonUrl(sourceUrl) {
+  return fetch(`${API_BASE}/comparisons/scrape-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source_url: sourceUrl }),
+  }).then(handleResponse);
+}
+
 export function getComparisons(limit = 50) {
   return fetch(`${API_BASE}/comparisons?limit=${limit}`).then(handleResponse);
 }
@@ -235,5 +290,21 @@ export function setComparisonApplicationDecision(comparisonReportId, applied) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ applied }),
+  }).then(handleResponse);
+}
+
+export function importComparisonChatGptResponse(comparisonReportId, responseText) {
+  return fetch(`${API_BASE}/comparisons/${comparisonReportId}/chatgpt-response`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ response_text: responseText }),
+  }).then(handleResponse);
+}
+
+export function updateComparisonParsedInfo(comparisonReportId, { company_name, title, location }) {
+  return fetch(`${API_BASE}/comparisons/${comparisonReportId}/parsed-info`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ company_name, title, location }),
   }).then(handleResponse);
 }

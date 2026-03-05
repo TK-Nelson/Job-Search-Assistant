@@ -125,6 +125,26 @@ def run_analysis(resume_version_id: int, job_posting_id: int) -> AnalysisRunResp
     posting_text = f"{posting[1] or ''}\n{posting[2] or ''}"
     posting_conf = float(posting[3] or 0.0)
 
+    if not str(resume_text).strip():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "VALIDATION_ERROR",
+                "message": "Selected resume has no extracted content. Choose a different resume or upload/paste one with text.",
+                "details": {"field": "resume_version_id"},
+            },
+        )
+
+    if not str(posting[2] or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "VALIDATION_ERROR",
+                "message": "Job listing description is empty. Update the posting before running analysis.",
+                "details": {"field": "job_posting_id"},
+            },
+        )
+
     resume_tokens = _tokens(resume_text)
     posting_tokens = _tokens(posting_text)
 

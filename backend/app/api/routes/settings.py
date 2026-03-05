@@ -1,10 +1,62 @@
+import json
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 
 from app.core.path_validation import validate_candidate_paths
 from app.core.settings_store import get_settings, save_settings
-from app.schemas.settings import AppConfig, PathValidationRequest, PathValidationResult
+from app.schemas.settings import (
+    AppConfig,
+    PathValidationRequest,
+    PathValidationResult,
+)
 
 router = APIRouter()
+
+PROFILE_DEFAULT = {
+    "profile_version": "1.0",
+    "owner": {
+        "display_name": "",
+        "target_roles": ["UX Designer", "Product Designer"],
+        "positioning_preference": "strategy_plus_execution",
+    },
+    "portfolio_sources": [],
+    "experience_signals": {
+        "industries": [],
+        "scope_patterns": [],
+        "leadership_signals": [],
+        "outcome_examples": [],
+    },
+    "review_preferences": {
+        "prioritize_positioning_mismatch": True,
+        "auto_rewrite_enabled": False,
+        "evidence_strict_mode": True,
+    },
+}
+
+
+def _profile_path() -> Path:
+    repo_root = Path(__file__).resolve().parents[4]
+    return repo_root / "config" / "personal_profile.local.json"
+
+
+def _read_profile() -> dict:
+    path = _profile_path()
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(PROFILE_DEFAULT, indent=2), encoding="utf-8")
+        return PROFILE_DEFAULT
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return PROFILE_DEFAULT
+
+
+def _save_profile(payload: dict) -> dict:
+    path = _profile_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return payload
 
 
 @router.get("/settings", response_model=AppConfig)
@@ -36,3 +88,15 @@ def validate_paths(payload: PathValidationRequest) -> PathValidationResult:
         artifacts_dir=payload.artifacts_dir,
         backups_dir=payload.backups_dir,
     )
+
+
+@router.get("/settings/personal-profile")
+def read_personal_profile() -> dict:
+    return _read_profile()
+
+
+@router.put("/settings/personal-profile")
+def update_personal_profile(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": "Payload must be an object."})
+    return _save_profile(payload)

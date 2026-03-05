@@ -1,6 +1,9 @@
 import hashlib
+import re
 import sqlite3
+from html.parser import HTMLParser
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -12,19 +15,55 @@ from app.schemas.analysis import (
     AnalysisSubScores,
 )
 from app.schemas.comparison import (
+    ComparisonChatGptImportRequest,
+    ComparisonChatGptImportResponse,
     ComparisonDecisionRequest,
     ComparisonDecisionResponse,
+    ComparisonParsedInfoUpdateRequest,
+    ComparisonParsedInfoUpdateResponse,
     ComparisonReportListResponse,
     ComparisonReportRead,
     ComparisonRunRequest,
     ComparisonRunResponse,
+    ComparisonUrlScrapeRequest,
+    ComparisonUrlScrapeResponse,
     map_comparison_list_item,
     parse_json,
 )
 from app.services.analysis import run_analysis
+from app.services.analysis_llm import (
+    build_chatgpt_prompt_for_comparison,
+    create_placeholder_analysis_run,
+    import_chatgpt_response_to_analysis,
+)
 from app.services.audit import write_audit_event
 
 router = APIRouter()
+
+
+class _VisibleTextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self._in_ignored = False
+        self._chunks: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in {"script", "style", "noscript"}:
+            self._in_ignored = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in {"script", "style", "noscript"}:
+            self._in_ignored = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_ignored:
+            return
+        text = " ".join((data or "").split())
+        if text:
+            self._chunks.append(text)
+
+    def get_text(self) -> str:
+        return "\n".join(self._chunks)
 
 
 def _db_uninitialized(exc: Exception) -> HTTPException:
@@ -49,10 +88,148 @@ def _looks_like_http_url(value: str | None) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def _fetch_html(url: str, timeout_seconds: int = 20) -> str:
+    request = Request(url, headers={"User-Agent": "JobSearchAssistant/0.1"})
+    with urlopen(request, timeout=timeout_seconds) as response:
+        content_type = response.headers.get("Content-Type", "")
+        if "text/html" not in content_type.lower() and "application/xhtml+xml" not in content_type.lower():
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "VALIDATION_ERROR",
+                    "message": "URL does not appear to be an HTML page.",
+                    "details": {"content_type": content_type},
+                },
+            )
+        return response.read().decode("utf-8", errors="ignore")
+
+
+def _meta_content(html: str, property_name: str) -> str | None:
+    pattern = re.compile(
+        rf"<meta[^>]+(?:property|name)=[\"']{re.escape(property_name)}[\"'][^>]+content=[\"']([^\"']+)[\"'][^>]*>",
+        re.IGNORECASE,
+    )
+    match = pattern.search(html)
+    return match.group(1).strip() if match and match.group(1).strip() else None
+
+
+def _extract_title(html: str) -> str | None:
+    for key in ("og:title", "twitter:title"):
+        value = _meta_content(html, key)
+        if value:
+            return value
+    match = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    cleaned = " ".join(match.group(1).split())
+    return cleaned if cleaned else None
+
+
+def _extract_site_name(html: str) -> str | None:
+    for key in ("og:site_name", "application-name"):
+        value = _meta_content(html, key)
+        if value:
+            return value
+    return None
+
+
+def _infer_company_name(url: str, html: str) -> str | None:
+    site_name = _extract_site_name(html)
+    if site_name:
+        return site_name
+
+    host = (urlparse(url).hostname or "").replace("www.", "")
+    if not host:
+        return None
+    root = host.split(".")[0]
+    if not root:
+        return None
+    return root.replace("-", " ").replace("_", " ").title()
+
+
+def _extract_description_text(html: str, max_chars: int = 12000) -> tuple[str, bool]:
+    extractor = _VisibleTextExtractor()
+    extractor.feed(html)
+    text = extractor.get_text()
+    text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+    if not text:
+        return "", False
+    if len(text) <= max_chars:
+        return text, False
+    return text[:max_chars].rstrip(), True
+
+
 def _company_placeholder_url(company_name: str) -> str:
     slug = "-".join(part for part in _normalize_text(company_name).replace("/", " ").split(" ") if part)
     slug = slug or "manual-company"
     return f"https://manual.local/company/{slug}"
+
+
+def _ensure_non_empty_comparison_inputs(conn: sqlite3.Connection, resume_version_id: int, description_text: str) -> None:
+    resume_row = conn.execute("SELECT extracted_text FROM resume_versions WHERE id = ?", (resume_version_id,)).fetchone()
+    if not resume_row:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Resume version not found."})
+
+    resume_text = (resume_row[0] or "").strip()
+    if not resume_text:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "VALIDATION_ERROR",
+                "message": "Selected resume has no extracted content. Choose a different resume or upload/paste one with text.",
+                "details": {"field": "resume_version_id"},
+            },
+        )
+
+    if not (description_text or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "VALIDATION_ERROR",
+                "message": "Job listing description is empty. Paste or scrape a valid job description before running comparison.",
+                "details": {"field": "description_text"},
+            },
+        )
+
+
+@router.post("/comparisons/scrape-url", response_model=ComparisonUrlScrapeResponse)
+def scrape_comparison_url(payload: ComparisonUrlScrapeRequest) -> ComparisonUrlScrapeResponse:
+    source_url = (payload.source_url or "").strip()
+    if not _looks_like_http_url(source_url):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "VALIDATION_ERROR",
+                "message": "source_url must be a valid http/https URL.",
+            },
+        )
+
+    try:
+        html = _fetch_html(source_url)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "VALIDATION_ERROR",
+                "message": f"Failed to fetch URL: {exc}",
+            },
+        )
+
+    description_text, truncation_applied = _extract_description_text(html)
+    if len(description_text) < 40:
+        meta_description = _meta_content(html, "description") or _meta_content(html, "og:description") or ""
+        description_text = meta_description.strip()
+
+    return ComparisonUrlScrapeResponse(
+        source_url=source_url,
+        inferred_company_name=_infer_company_name(source_url, html),
+        inferred_title=_extract_title(html),
+        description_text=description_text,
+        extracted_characters=len(description_text),
+        truncation_applied=truncation_applied,
+    )
 
 
 def _resolve_company(conn: sqlite3.Connection, payload: ComparisonRunRequest) -> tuple[int, str]:
@@ -214,6 +391,7 @@ def _load_analysis_response(conn: sqlite3.Connection, analysis_run_id: int) -> A
 def run_comparison(payload: ComparisonRunRequest) -> ComparisonRunResponse:
     try:
         with get_connection() as conn:
+            _ensure_non_empty_comparison_inputs(conn, payload.resume_version_id, payload.description_text)
             company_id, company_name = _resolve_company(conn, payload)
             posting_id = _create_or_update_manual_posting(
                 conn=conn,
@@ -226,7 +404,15 @@ def run_comparison(payload: ComparisonRunRequest) -> ComparisonRunResponse:
     except sqlite3.OperationalError as exc:
         raise _db_uninitialized(exc)
 
-    analysis = run_analysis(payload.resume_version_id, posting_id)
+    requested_mode = payload.evaluation_mode if payload.evaluation_mode in {"chatgpt_api", "local_engine"} else "chatgpt_api"
+    evaluation_source = requested_mode
+    fallback_reason: str | None = None
+
+    if requested_mode == "chatgpt_api":
+        analysis = create_placeholder_analysis_run(payload.resume_version_id, posting_id)
+        evaluation_source = "chatgpt_api"
+    else:
+        analysis = run_analysis(payload.resume_version_id, posting_id)
 
     try:
         with get_connection() as conn:
@@ -238,9 +424,11 @@ def run_comparison(payload: ComparisonRunRequest) -> ComparisonRunResponse:
                   analysis_run_id,
                   source_company_input,
                   source_url_input,
+                                    evaluation_source,
+                                    chatgpt_response_json,
                   applied_decision,
                   linked_application_id
-                ) VALUES (?, ?, ?, ?, ?, 'unknown', NULL)
+                                ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'unknown', NULL)
                 """,
                 (
                     posting_id,
@@ -248,6 +436,7 @@ def run_comparison(payload: ComparisonRunRequest) -> ComparisonRunResponse:
                     analysis.analysis_run_id,
                     company_name,
                     payload.source_url.strip() if payload.source_url else None,
+                                        evaluation_source,
                 ),
             )
             comparison_report_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -264,12 +453,17 @@ def run_comparison(payload: ComparisonRunRequest) -> ComparisonRunResponse:
             "job_posting_id": posting_id,
             "resume_version_id": payload.resume_version_id,
             "analysis_run_id": analysis.analysis_run_id,
+            "requested_mode": requested_mode,
+            "evaluation_source": evaluation_source,
+            "fallback_reason": fallback_reason,
         },
     )
 
     return ComparisonRunResponse(
         comparison_report_id=comparison_report_id,
         job_posting_id=posting_id,
+        evaluation_source=evaluation_source,
+        fallback_reason=fallback_reason,
         analysis=analysis,
         created_at=created_at,
     )
@@ -288,6 +482,7 @@ def list_comparisons(limit: int = Query(default=50, ge=1, le=200)) -> Comparison
                   jp.title,
                   COALESCE(cr.source_url_input, jp.canonical_url),
                   ar.overall_score,
+                  cr.evaluation_source,
                   cr.applied_decision,
                   cr.linked_application_id,
                   cr.created_at
@@ -323,6 +518,8 @@ def get_comparison(comparison_report_id: int) -> ComparisonReportRead:
                   c.name,
                   jp.title,
                   jp.canonical_url,
+                  cr.evaluation_source,
+                  cr.chatgpt_response_json,
                   cr.applied_decision,
                   cr.linked_application_id,
                   cr.created_at
@@ -337,6 +534,9 @@ def get_comparison(comparison_report_id: int) -> ComparisonReportRead:
                 raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Comparison report not found."})
 
             analysis = _load_analysis_response(conn, int(row[3]))
+            prompt_text = None
+            if str(row[9]) == "chatgpt_api":
+                prompt_text = build_chatgpt_prompt_for_comparison(int(row[2]), int(row[1]))
     except sqlite3.OperationalError as exc:
         raise _db_uninitialized(exc)
 
@@ -350,10 +550,120 @@ def get_comparison(comparison_report_id: int) -> ComparisonReportRead:
         company_name=str(row[6]),
         title=str(row[7]),
         canonical_url=str(row[8]),
-        applied_decision=str(row[9]),
-        linked_application_id=row[10],
-        created_at=str(row[11]),
+        evaluation_source=str(row[9]) if str(row[9]) in {"chatgpt_api", "local_engine"} else "local_engine",
+        chatgpt_prompt_text=prompt_text,
+        chatgpt_response_present=bool(row[10]),
+        chatgpt_response_json=parse_json(row[10], None),
+        applied_decision=str(row[11]),
+        linked_application_id=row[12],
+        created_at=str(row[13]),
         analysis=analysis,
+    )
+
+
+@router.post("/comparisons/{comparison_report_id}/chatgpt-response", response_model=ComparisonChatGptImportResponse)
+def import_chatgpt_response(comparison_report_id: int, payload: ComparisonChatGptImportRequest) -> ComparisonChatGptImportResponse:
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, job_posting_id, resume_version_id, analysis_run_id, evaluation_source
+                FROM comparison_reports
+                WHERE id = ?
+                """,
+                (comparison_report_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Comparison report not found."})
+            if str(row[4]) != "chatgpt_api":
+                raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": "Report is not in ChatGPT mode."})
+
+            result = import_chatgpt_response_to_analysis(
+                resume_version_id=int(row[2]),
+                job_posting_id=int(row[1]),
+                analysis_run_id=int(row[3]),
+                response_text=payload.response_text,
+            )
+
+            conn.execute(
+                "UPDATE comparison_reports SET chatgpt_response_json = ? WHERE id = ?",
+                (payload.response_text, comparison_report_id),
+            )
+            conn.commit()
+    except sqlite3.OperationalError as exc:
+        raise _db_uninitialized(exc)
+
+    write_audit_event(
+        event_type="comparison.chatgpt_response_imported",
+        entity_type="comparison_report",
+        entity_id=str(comparison_report_id),
+        payload={"analysis_run_id": result.analysis_run_id},
+    )
+
+    return ComparisonChatGptImportResponse(
+        comparison_report_id=comparison_report_id,
+        analysis_run_id=result.analysis_run_id,
+        overall_score=result.overall_score,
+    )
+
+
+@router.patch("/comparisons/{comparison_report_id}/parsed-info", response_model=ComparisonParsedInfoUpdateResponse)
+def update_comparison_parsed_info(
+    comparison_report_id: int, payload: ComparisonParsedInfoUpdateRequest
+) -> ComparisonParsedInfoUpdateResponse:
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT cr.id, cr.job_posting_id, jp.company_id, jp.title, jp.location, c.name
+                FROM comparison_reports cr
+                JOIN job_postings jp ON jp.id = cr.job_posting_id
+                JOIN companies c ON c.id = jp.company_id
+                WHERE cr.id = ?
+                """,
+                (comparison_report_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Comparison report not found."})
+
+            posting_id = int(row[1])
+            company_id = int(row[2])
+            current_title = str(row[3])
+            current_location = row[4]
+            current_company_name = str(row[5])
+
+            new_title = (payload.title or "").strip() or current_title
+            new_location = (payload.location or "").strip() if payload.location is not None else current_location
+            new_company_name = (payload.company_name or "").strip() or current_company_name
+
+            conn.execute(
+                "UPDATE job_postings SET title = ?, location = ? WHERE id = ?",
+                (new_title, new_location, posting_id),
+            )
+            conn.execute(
+                "UPDATE companies SET name = ? WHERE id = ?",
+                (new_company_name, company_id),
+            )
+            conn.commit()
+    except sqlite3.OperationalError as exc:
+        raise _db_uninitialized(exc)
+
+    write_audit_event(
+        event_type="comparison.parsed_info_updated",
+        entity_type="comparison_report",
+        entity_id=str(comparison_report_id),
+        payload={
+            "title": new_title,
+            "location": new_location,
+            "company_name": new_company_name,
+        },
+    )
+
+    return ComparisonParsedInfoUpdateResponse(
+        comparison_report_id=comparison_report_id,
+        company_name=new_company_name,
+        title=new_title,
+        location=new_location,
     )
 
 

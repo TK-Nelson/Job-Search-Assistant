@@ -43,6 +43,12 @@
 - Runtime data root defaults to `%LOCALAPPDATA%/JobSearchAssistant`
 - Database and artifact paths default under that root
 
+## Repo-local runtime mode (recommended for local portability)
+- Running `scripts/start-backend.ps1` sets `JOB_SEARCH_ASSISTANT_RUNTIME_ROOT` to `job-search-assistant/.runtime`.
+- Logs, DB, backups, and local config are then stored under `.runtime/` inside this repo folder.
+- On first run, if `.runtime/data/job_assistant.db` is missing and `%LOCALAPPDATA%/JobSearchAssistant/data/job_assistant.db` exists, the script copies runtime data into `.runtime` automatically.
+- `.runtime/` is gitignored to keep sensitive/local artifacts out of GitHub.
+
 ## Backend run
 1. `cd job-search-assistant/backend`
 2. `python -m venv .venv`
@@ -109,3 +115,10 @@ From `job-search-assistant/scripts` run:
 `powershell -ExecutionPolicy Bypass -File .\create-desktop-shortcut.ps1`
 
 This creates a Desktop shortcut named **Job Search Assistant** that launches backend and frontend in separate terminals.
+
+Launcher hardening notes:
+- The launcher now checks for existing backend/frontend processes and skips duplicate starts.
+- Backend startup checks port `8000` before launch and exits with a clear conflict error if the port is occupied.
+- Frontend startup checks port `5173` and skips duplicate dev server starts.
+- Backend `--reload` is disabled by default in launcher mode to reduce orphan child processes.
+- To enable backend auto-reload explicitly, set environment variable `JSA_BACKEND_RELOAD=1` before starting.

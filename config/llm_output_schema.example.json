@@ -1,0 +1,96 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "overall_fit_score",
+    "overall_fit_justification",
+    "strategic_evaluation",
+    "gap_analysis",
+    "hard_skill_evaluation",
+    "soft_skill_evaluation",
+    "positioning_risk_assessment"
+  ],
+  "properties": {
+    "overall_fit_score": { "type": "number", "minimum": 1, "maximum": 100 },
+    "overall_fit_justification": { "type": "string" },
+    "strategic_evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seniority_fit", "positioning_fit", "domain_fit"],
+      "properties": {
+        "seniority_fit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rating", "reasoning"],
+          "properties": {
+            "rating": { "type": "string", "enum": ["Strong Fit", "Partial Fit", "No Fit"] },
+            "reasoning": { "type": "string" }
+          }
+        },
+        "positioning_fit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rating", "reasoning"],
+          "properties": {
+            "rating": { "type": "string", "enum": ["Strong Fit", "Partial Fit", "No Fit"] },
+            "reasoning": { "type": "string" }
+          }
+        },
+        "domain_fit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rating", "reasoning"],
+          "properties": {
+            "rating": { "type": "string", "enum": ["Strong Fit", "Partial Fit", "No Fit"] },
+            "reasoning": { "type": "string" }
+          }
+        }
+      }
+    },
+    "gap_analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "requirements"],
+      "properties": {
+        "summary": { "type": "string" },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["job_requirement", "present_in_resume", "strength_level", "notes"],
+            "properties": {
+              "job_requirement": { "type": "string" },
+              "present_in_resume": { "type": "boolean" },
+              "strength_level": { "type": "string", "enum": ["Strong", "Moderate", "Weak", "Missing"] },
+              "notes": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "hard_skill_evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "explanation", "strongest_matches", "missing_or_underrepresented"],
+      "properties": {
+        "score": { "type": "number", "minimum": 1, "maximum": 100 },
+        "explanation": { "type": "string" },
+        "strongest_matches": { "type": "array", "items": { "type": "string" } },
+        "missing_or_underrepresented": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "soft_skill_evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "explanation", "strongest_indicators", "missing_or_unclear"],
+      "properties": {
+        "score": { "type": "number", "minimum": 1, "maximum": 100 },
+        "explanation": { "type": "string" },
+        "strongest_indicators": { "type": "array", "items": { "type": "string" } },
+        "missing_or_unclear": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "positioning_risk_assessment": { "type": "string" }
+  }
+}

@@ -38,6 +38,7 @@ frontend/.cache/
 *.sqlite
 *.sqlite3
 *.log
+.runtime/
 logs/
 data/
 artifacts/
@@ -47,7 +48,22 @@ temp/
 
 # Optional local app data mirrors (if created under repo)
 config/app_config.json
+config/personal_profile.local.json
+config/personal_context.local.json
+config/llm_prompt.local.txt
+config/llm_output_schema.local.json
+*.local.json
+*.local.txt
+personal/
+private/
 
 # Build artifacts
 *.egg-info/
 *.whl
+
+# Local planning and project journal artifacts (keep out of GitHub)
+JOB_SEARCH_ASSISTANT_V1_BACKLOG.md
+IMPLEMENTATION_SPEC_V1.md
+ACTIVITY_DECISION_LOG.md
+PROJECT_ACTIVITY_DECISION_LOG.md
+docs/private/

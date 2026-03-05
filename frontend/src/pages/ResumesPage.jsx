@@ -1,5 +1,24 @@
 import { Fragment, useEffect, useState } from "react";
 import { Pencil, Save, Trash2, X } from "lucide-react";
+import {
+  ActionIcon,
+  Alert,
+  Anchor,
+  Badge,
+  Breadcrumbs,
+  Button,
+  FileInput,
+  Group,
+  Paper,
+  Stack,
+  Table,
+  Text,
+  TextInput,
+  Textarea,
+  Title,
+} from "@mantine/core";
+import { AlertCircle, Info } from "lucide-react";
+import { Link } from "react-router-dom";
 
 import {
   deleteResume,
@@ -80,13 +99,6 @@ function renderHighlightedText(text, terms) {
     const isMatch = activeTerms.some((term) => term.toLowerCase() === String(part).toLowerCase());
     return isMatch ? <mark key={`${part}-${index}`}>{part}</mark> : <span key={`${part}-${index}`}>{part}</span>;
   });
-}
-
-function severityChipClass(severity) {
-  const value = String(severity || "").toLowerCase();
-  if (value === "warning") return "chip chip--warning";
-  if (value === "error") return "chip chip--error";
-  return "chip chip--info";
 }
 
 export default function ResumesPage() {
@@ -288,116 +300,123 @@ export default function ResumesPage() {
   const grouped = groupResumes(resumes);
 
   const statusTone = getStatusTone(statusText);
+  const statusColor = statusTone === "error" ? "red" : statusTone === "warning" ? "yellow" : statusTone === "success" ? "teal" : "blue";
 
   return (
-    <div className="panel">
-      <h2>Resumes</h2>
-      <p className="muted">Upload DOCX resumes and manage version history for analysis.</p>
+    <Stack gap="md">
+      <Breadcrumbs>
+        <Anchor component={Link} to="/dashboard">Dashboard</Anchor>
+        <Text size="sm">Resumes</Text>
+      </Breadcrumbs>
 
-      <form onSubmit={onUpload} className="actions">
-        <input
-          type="file"
-          accept=".docx"
-          disabled={isUploading}
-          onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
-        />
-        <button type="submit" disabled={isUploading || !selectedFile}>
-          {isUploading ? "Uploading..." : "Upload"}
-        </button>
-        <button
+      <Paper withBorder p="lg" radius="md">
+      <Title order={2}>Resumes</Title>
+      <Text c="dimmed" size="sm">Upload DOCX resumes and manage version history for analysis.</Text>
+
+      <form onSubmit={onUpload}>
+        <Group mt="md" align="end">
+          <FileInput
+            label="Resume DOCX"
+            placeholder="Select .docx file"
+            accept=".docx"
+            disabled={isUploading}
+            value={selectedFile}
+            onChange={setSelectedFile}
+          />
+          <Button type="submit" loading={isUploading} disabled={!selectedFile}>
+            Upload
+          </Button>
+          <Button
           type="button"
+          variant="subtle"
           onClick={() => setShowPasteForm((current) => !current)}
           disabled={isPasting || isUploading}
         >
           {showPasteForm ? "Close paste form" : "Paste resume instead"}
-        </button>
+          </Button>
+        </Group>
       </form>
 
       {showPasteForm && (
-        <form className="panel nested" onSubmit={onPasteSubmit}>
-          <h3>Paste Resume</h3>
-          <div className="grid">
-            <label>
-              Title
-              <input value={pasteTitle} onChange={(event) => setPasteTitle(event.target.value)} disabled={isPasting} />
-            </label>
-            <label>
-              Initial notes (optional)
-              <input value={pasteNotes} onChange={(event) => setPasteNotes(event.target.value)} disabled={isPasting} />
-            </label>
-            <label>
-              Resume text
-              <textarea
-                className="prompt-box"
+        <Paper withBorder p="md" radius="md" mt="md">
+          <form onSubmit={onPasteSubmit}>
+            <Text fw={600} mb="xs">Paste Resume</Text>
+            <Stack>
+              <TextInput label="Title" value={pasteTitle} onChange={(event) => setPasteTitle(event.target.value)} disabled={isPasting} />
+              <TextInput label="Initial notes (optional)" value={pasteNotes} onChange={(event) => setPasteNotes(event.target.value)} disabled={isPasting} />
+              <Textarea
+                label="Resume text"
                 rows={10}
                 value={pasteText}
                 onChange={(event) => setPasteText(event.target.value)}
                 disabled={isPasting}
                 placeholder="Paste your resume content here"
               />
-            </label>
-          </div>
-          <div className="actions">
-            <button type="submit" disabled={isPasting}>
-              {isPasting ? "Saving..." : "Save pasted resume"}
-            </button>
-          </div>
-        </form>
+              <Group>
+                <Button type="submit" loading={isPasting}>Save pasted resume</Button>
+              </Group>
+            </Stack>
+          </form>
+        </Paper>
       )}
 
-      {statusText && <p className={`status status--${statusTone}`}>{statusText}</p>}
+      {statusText && (
+        <Alert mt="md" color={statusColor} icon={statusTone === "error" ? <AlertCircle size={16} /> : <Info size={16} />} variant="light">
+          {statusText}
+        </Alert>
+      )}
 
-      <section className="table-wrap">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Resume</th>
-              <th>Latest Version</th>
-              <th>
+      <Table.ScrollContainer minWidth={1100} mt="md">
+        <Table striped highlightOnHover withTableBorder withColumnBorders>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Resume</Table.Th>
+              <Table.Th>Latest Version</Table.Th>
+              <Table.Th>
                 <span
                   className="term-help"
                   title="Parser confidence is the system's estimate (0.00-1.00) of how reliably text and sections were extracted from this DOCX."
                 >
                   Parser Confidence
                 </span>
-              </th>
-              <th>Uploaded/Created</th>
-              <th>Notes</th>
-              <th className="actions-col">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
+              </Table.Th>
+              <Table.Th>Uploaded/Created</Table.Th>
+              <Table.Th>Notes</Table.Th>
+              <Table.Th className="actions-col">Actions</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
             {grouped.map((group) => {
               const isExpanded = Boolean(expandedSources[group.sourceName]);
               return (
                 <Fragment key={`group-${group.sourceName}`}>
-                  <tr className="parent-row" onClick={() => setExpandedSources((current) => ({ ...current, [group.sourceName]: !isExpanded }))}>
-                    <td>
+                  <Table.Tr className="parent-row" onClick={() => setExpandedSources((current) => ({ ...current, [group.sourceName]: !isExpanded }))}>
+                    <Table.Td>
                       <span className="accordion-caret">{isExpanded ? "▾" : "▸"}</span> {group.sourceName}
-                    </td>
-                    <td>{group.latest.version_tag}</td>
-                    <td>{Number(group.latest.parser_confidence).toFixed(2)}</td>
-                    <td>{group.latest.created_at}</td>
-                    <td>{group.latest.notes || "-"}</td>
-                    <td className="actions-col">{group.versions.length} version(s)</td>
-                  </tr>
+                    </Table.Td>
+                    <Table.Td>{group.latest.version_tag}</Table.Td>
+                    <Table.Td>{Number(group.latest.parser_confidence).toFixed(2)}</Table.Td>
+                    <Table.Td>{group.latest.created_at}</Table.Td>
+                    <Table.Td>{group.latest.notes || "-"}</Table.Td>
+                    <Table.Td className="actions-col">{group.versions.length} version(s)</Table.Td>
+                  </Table.Tr>
 
                   {isExpanded &&
                     group.versions.map((version) => (
                       <Fragment key={`version-${version.id}`}>
-                        <tr
+                        <Table.Tr
                           className="child-row"
                           onClick={() => onToggleVersionDiagnostics(version.id)}
                         >
-                          <td className="child-indent">↳ {version.source_name}</td>
-                          <td>{version.version_tag}</td>
-                          <td>{Number(version.parser_confidence).toFixed(2)}</td>
-                          <td>{version.created_at}</td>
-                          <td onClick={(event) => event.stopPropagation()}>
+                          <Table.Td className="child-indent">↳ {version.source_name}</Table.Td>
+                          <Table.Td>{version.version_tag}</Table.Td>
+                          <Table.Td>{Number(version.parser_confidence).toFixed(2)}</Table.Td>
+                          <Table.Td>{version.created_at}</Table.Td>
+                          <Table.Td onClick={(event) => event.stopPropagation()}>
                             <div className="notes-cell">
                               {editingNotesId === version.id ? (
-                                <>
-                                  <input
+                                <Group wrap="nowrap">
+                                  <TextInput
                                     value={notesDraftById[version.id] ?? ""}
                                     onChange={(event) =>
                                       setNotesDraftById((current) => ({
@@ -408,33 +427,30 @@ export default function ResumesPage() {
                                     placeholder="Version notes"
                                     disabled={savingNotesId === version.id || deletingId === version.id}
                                   />
-                                  <button
-                                    type="button"
-                                    className="icon-action"
+                                  <ActionIcon
+                                    variant="subtle"
                                     title="Save notes"
                                     aria-label="Save notes"
                                     onClick={() => onSaveNotes(version.id)}
                                     disabled={savingNotesId === version.id || deletingId === version.id}
                                   >
                                     <Save size={16} />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="icon-action"
+                                  </ActionIcon>
+                                  <ActionIcon
+                                    variant="subtle"
                                     title="Cancel editing"
                                     aria-label="Cancel editing"
                                     onClick={() => onCancelNotesEdit(version.id, version.notes)}
                                     disabled={savingNotesId === version.id || deletingId === version.id}
                                   >
                                     <X size={16} />
-                                  </button>
-                                </>
+                                  </ActionIcon>
+                                </Group>
                               ) : (
-                                <>
+                                <Group wrap="nowrap">
                                   <span className="notes-preview">{version.notes || "-"}</span>
-                                  <button
-                                    type="button"
-                                    className="icon-action"
+                                  <ActionIcon
+                                    variant="subtle"
                                     title="Edit notes"
                                     aria-label="Edit notes"
                                     onClick={() => {
@@ -447,41 +463,53 @@ export default function ResumesPage() {
                                     disabled={deletingId === version.id}
                                   >
                                     <Pencil size={16} />
-                                  </button>
-                                </>
+                                  </ActionIcon>
+                                </Group>
                               )}
                             </div>
-                          </td>
-                          <td className="actions-col" onClick={(event) => event.stopPropagation()}>
-                            <button
-                              type="button"
-                              className="icon-danger"
+                          </Table.Td>
+                          <Table.Td className="actions-col" onClick={(event) => event.stopPropagation()}>
+                            <ActionIcon
+                              variant="light"
+                              color="red"
                               title="Remove version"
                               aria-label="Remove version"
                               disabled={Boolean(deletingId)}
                               onClick={() => onDelete(version)}
                             >
                               {deletingId === version.id ? <X size={16} /> : <Trash2 size={16} />}
-                            </button>
-                          </td>
-                        </tr>
+                            </ActionIcon>
+                          </Table.Td>
+                        </Table.Tr>
 
                         {expandedVersionId === version.id && (
-                          <tr className="diagnostics-row">
-                            <td colSpan={6}>
-                              {loadingDiagnosticsId === version.id && <p>Loading parser diagnostics...</p>}
+                          <Table.Tr className="diagnostics-row">
+                            <Table.Td colSpan={6}>
+                              {loadingDiagnosticsId === version.id && <Text>Loading parser diagnostics...</Text>}
                               {loadingDiagnosticsId !== version.id && diagnosticsById[version.id] && (
                                 <div className="diagnostics-panel">
-                                  <h4>Parser Concern Review</h4>
-                                  <p className="muted small-text">
+                                  <Text fw={600}>Parser Concern Review</Text>
+                                  <Text className="muted small-text">
                                     Parser confidence: {Number(diagnosticsById[version.id].parser_confidence || 0).toFixed(2)} ·
                                     Gap to 1.00: {Number(1 - Number(diagnosticsById[version.id].parser_confidence || 0)).toFixed(2)}
-                                  </p>
+                                  </Text>
                                   {diagnosticsById[version.id].concerns.length > 0 ? (
                                     <ul>
                                       {diagnosticsById[version.id].concerns.map((concern) => (
                                         <li key={concern.code}>
-                                          <span className={severityChipClass(concern.severity)}>{concern.severity}</span>{" "}
+                                          <Badge
+                                            color={
+                                              concern.severity === "error"
+                                                ? "red"
+                                                : concern.severity === "warning"
+                                                  ? "yellow"
+                                                  : "blue"
+                                            }
+                                            variant="light"
+                                            mr={6}
+                                          >
+                                            {concern.severity}
+                                          </Badge>
                                           {concern.message}
                                           {typeof concern.delta_value === "number" && concern.delta_label && (
                                             <span className="concern-delta">
@@ -492,7 +520,7 @@ export default function ResumesPage() {
                                       ))}
                                     </ul>
                                   ) : (
-                                    <p>No parser concerns detected.</p>
+                                    <Text>No parser concerns detected.</Text>
                                   )}
 
                                   <div className="markup-preview">
@@ -503,8 +531,8 @@ export default function ResumesPage() {
                                   </div>
                                 </div>
                               )}
-                            </td>
-                          </tr>
+                            </Table.Td>
+                          </Table.Tr>
                         )}
                       </Fragment>
                     ))}
@@ -513,18 +541,19 @@ export default function ResumesPage() {
             })}
 
             {isLoading && (
-              <tr>
-                <td colSpan={6}>Loading resumes...</td>
-              </tr>
+              <Table.Tr>
+                <Table.Td colSpan={6}>Loading resumes...</Table.Td>
+              </Table.Tr>
             )}
             {grouped.length === 0 && !isLoading && (
-              <tr>
-                <td colSpan={6}>No resume versions yet.</td>
-              </tr>
+              <Table.Tr>
+                <Table.Td colSpan={6}>No resume versions yet.</Table.Td>
+              </Table.Tr>
             )}
-          </tbody>
-        </table>
-      </section>
-    </div>
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
+      </Paper>
+    </Stack>
   );
 }

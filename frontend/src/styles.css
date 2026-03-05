@@ -1,5 +1,6 @@
 :root {
   font-family: Inter, Segoe UI, sans-serif;
+  font-size: 16px;
   color: #111;
   background: #f6f7fb;
 }
@@ -10,6 +11,30 @@
 
 body {
   margin: 0;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+/* ─── Style guide: standardised body text ─── */
+p, span, td, th, li, label, a,
+.mantine-Text-root,
+.mantine-Anchor-root,
+.mantine-Table-td,
+.mantine-Table-th,
+.mantine-Menu-item,
+.mantine-Select-input,
+.mantine-TextInput-input,
+.mantine-Textarea-input,
+.mantine-Checkbox-label,
+.mantine-Badge-root {
+  font-size: 16px;
+}
+
+/* Buttons use the same base size unless explicitly overridden with size="xs" etc. */
+button,
+.mantine-Button-root,
+.mantine-ActionIcon-root {
+  font-size: 16px;
 }
 
 .layout {
@@ -57,6 +82,7 @@ body {
 
 main {
   padding: 20px;
+  background: var(--mantine-color-gray-0);
 }
 
 .panel {
@@ -189,6 +215,15 @@ textarea:disabled {
   text-align: left;
   padding: 10px;
   vertical-align: top;
+}
+
+.company-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: contain;
+  border: 1px solid #e7e8ee;
+  background: #fff;
 }
 
 .prompt-box {

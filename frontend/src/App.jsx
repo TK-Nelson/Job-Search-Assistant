@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes, useParams } from "react-router-dom";
 
 import ApplicationsPage from "./pages/ApplicationsPage";
 import ComparisonReportPage from "./pages/ComparisonReportPage";
@@ -8,6 +8,11 @@ import DashboardPage from "./pages/DashboardPage";
 import PostingsPage from "./pages/PostingsPage";
 import ResumesPage from "./pages/ResumesPage";
 import SettingsPage from "./pages/SettingsPage";
+
+function LegacyComparisonRedirect() {
+  const { comparisonReportId } = useParams();
+  return <Navigate to={`/postings/reports/${comparisonReportId}`} replace />;
+}
 
 export default function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -65,7 +70,8 @@ export default function App() {
           <Route path="/applications" element={<ApplicationsPage />} />
           <Route path="/resumes" element={<ResumesPage />} />
           <Route path="/postings" element={<PostingsPage />} />
-          <Route path="/comparisons/:comparisonReportId" element={<ComparisonReportPage />} />
+          <Route path="/postings/reports/:comparisonReportId" element={<ComparisonReportPage />} />
+          <Route path="/comparisons/:comparisonReportId" element={<LegacyComparisonRedirect />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>

@@ -29,6 +29,12 @@ def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) 
 
 
 def _apply_runtime_migrations(conn: sqlite3.Connection) -> None:
+    if not _column_exists(conn, "companies", "industry"):
+        conn.execute("ALTER TABLE companies ADD COLUMN industry TEXT")
+
+    if not _column_exists(conn, "companies", "logo_url"):
+        conn.execute("ALTER TABLE companies ADD COLUMN logo_url TEXT")
+
     if not _column_exists(conn, "resume_versions", "notes"):
         conn.execute("ALTER TABLE resume_versions ADD COLUMN notes TEXT")
 
@@ -64,6 +70,8 @@ def _apply_runtime_migrations(conn: sqlite3.Connection) -> None:
           analysis_run_id INTEGER NOT NULL,
           source_company_input TEXT,
           source_url_input TEXT,
+          evaluation_source TEXT NOT NULL DEFAULT 'local_engine' CHECK (evaluation_source IN ('chatgpt_api','local_engine')),
+          chatgpt_response_json TEXT,
           applied_decision TEXT NOT NULL DEFAULT 'unknown' CHECK (applied_decision IN ('unknown','yes','no')),
           linked_application_id INTEGER,
           created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -74,6 +82,17 @@ def _apply_runtime_migrations(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    if not _column_exists(conn, "comparison_reports", "evaluation_source"):
+        conn.execute("ALTER TABLE comparison_reports ADD COLUMN evaluation_source TEXT NOT NULL DEFAULT 'local_engine'")
+        conn.execute(
+            """
+            UPDATE comparison_reports
+            SET evaluation_source = 'local_engine'
+            WHERE evaluation_source IS NULL OR evaluation_source NOT IN ('chatgpt_api','local_engine')
+            """
+        )
+    if not _column_exists(conn, "comparison_reports", "chatgpt_response_json"):
+        conn.execute("ALTER TABLE comparison_reports ADD COLUMN chatgpt_response_json TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_comparison_reports_created ON comparison_reports(created_at DESC)")
 
 

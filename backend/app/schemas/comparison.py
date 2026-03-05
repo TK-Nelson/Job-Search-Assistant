@@ -1,4 +1,6 @@
 import json
+from typing import Any
+from typing import Literal
 from pydantic import BaseModel, model_validator
 
 from app.schemas.analysis import AnalysisRunResponse
@@ -11,6 +13,7 @@ class ComparisonRunRequest(BaseModel):
     title: str | None = None
     description_text: str
     resume_version_id: int
+    evaluation_mode: Literal["chatgpt_api", "local_engine"] = "chatgpt_api"
 
     @model_validator(mode="after")
     def validate_source(self):
@@ -21,9 +24,24 @@ class ComparisonRunRequest(BaseModel):
         return self
 
 
+class ComparisonUrlScrapeRequest(BaseModel):
+    source_url: str
+
+
+class ComparisonUrlScrapeResponse(BaseModel):
+    source_url: str
+    inferred_company_name: str | None = None
+    inferred_title: str | None = None
+    description_text: str
+    extracted_characters: int
+    truncation_applied: bool = False
+
+
 class ComparisonRunResponse(BaseModel):
     comparison_report_id: int
     job_posting_id: int
+    evaluation_source: Literal["chatgpt_api", "local_engine"]
+    fallback_reason: str | None = None
     analysis: AnalysisRunResponse
     created_at: str
 
@@ -35,6 +53,7 @@ class ComparisonReportListItem(BaseModel):
     title: str
     source_url: str | None
     overall_score: float
+    evaluation_source: Literal["chatgpt_api", "local_engine"] = "local_engine"
     applied_decision: str
     linked_application_id: int | None
     created_at: str
@@ -55,10 +74,24 @@ class ComparisonReportRead(BaseModel):
     company_name: str
     title: str
     canonical_url: str
+    evaluation_source: Literal["chatgpt_api", "local_engine"] = "local_engine"
+    chatgpt_prompt_text: str | None = None
+    chatgpt_response_present: bool = False
+    chatgpt_response_json: dict[str, Any] | None = None
     applied_decision: str
     linked_application_id: int | None
     created_at: str
     analysis: AnalysisRunResponse
+
+
+class ComparisonChatGptImportRequest(BaseModel):
+    response_text: str
+
+
+class ComparisonChatGptImportResponse(BaseModel):
+    comparison_report_id: int
+    analysis_run_id: int
+    overall_score: float
 
 
 class ComparisonDecisionRequest(BaseModel):
@@ -71,6 +104,19 @@ class ComparisonDecisionResponse(BaseModel):
     application_id: int | None
 
 
+class ComparisonParsedInfoUpdateRequest(BaseModel):
+    company_name: str | None = None
+    title: str | None = None
+    location: str | None = None
+
+
+class ComparisonParsedInfoUpdateResponse(BaseModel):
+    comparison_report_id: int
+    company_name: str
+    title: str
+    location: str | None
+
+
 def map_comparison_list_item(row: tuple) -> ComparisonReportListItem:
     return ComparisonReportListItem(
         id=row[0],
@@ -79,9 +125,10 @@ def map_comparison_list_item(row: tuple) -> ComparisonReportListItem:
         title=row[3],
         source_url=row[4],
         overall_score=round(float(row[5] or 0.0), 2),
-        applied_decision=row[6],
-        linked_application_id=row[7],
-        created_at=row[8],
+        evaluation_source=(str(row[6]) if len(row) > 6 and row[6] in ("chatgpt_api", "local_engine") else "local_engine"),
+        applied_decision=row[7],
+        linked_application_id=row[8],
+        created_at=row[9],
     )
 
 

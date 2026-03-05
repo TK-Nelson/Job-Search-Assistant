@@ -248,3 +248,19 @@ def list_application_history(application_id: int) -> StageHistoryResponse:
 
     items = [map_stage_history_row(row) for row in rows]
     return StageHistoryResponse(items=items, count=len(items))
+
+
+@router.delete("/applications/{application_id}")
+def delete_application(application_id: int) -> dict[str, int | str]:
+    try:
+        with get_connection() as conn:
+            row = conn.execute("SELECT id FROM applications WHERE id = ?", (application_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Application not found."})
+
+            conn.execute("DELETE FROM applications WHERE id = ?", (application_id,))
+            conn.commit()
+    except sqlite3.OperationalError as exc:
+        raise _db_uninitialized(exc)
+
+    return {"status": "deleted", "application_id": application_id}

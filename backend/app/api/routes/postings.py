@@ -148,3 +148,26 @@ def get_job_posting(posting_id: int, resumeVersionId: int | None = Query(default
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Job posting not found."})
 
     return map_job_posting_row(row)
+
+
+@router.delete("/job-postings/{posting_id}")
+def delete_job_posting(posting_id: int) -> dict:
+    try:
+        with get_connection() as conn:
+            row = conn.execute("SELECT id FROM job_postings WHERE id = ?", (posting_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Job posting not found."})
+
+            conn.execute("DELETE FROM job_postings WHERE id = ?", (posting_id,))
+            conn.commit()
+    except sqlite3.OperationalError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "VALIDATION_ERROR",
+                "message": "Database is not initialized. Run /api/v1/db/init first.",
+                "details": {"reason": str(exc)},
+            },
+        )
+
+    return {"status": "deleted", "job_posting_id": posting_id}

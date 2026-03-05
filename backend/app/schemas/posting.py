@@ -37,7 +37,7 @@ def map_job_posting_row(row: tuple) -> JobPostingRead:
 
     match_score = round(float(analysis_overall_score), 2) if analysis_overall_score is not None else round(parser_confidence * 100, 2)
 
-    why = "Basic match derived from career page job-link heuristics."
+    why = "Heuristic match from careers-page parsing. Run analysis for evidence-backed rationale."
     if analysis_evidence_json:
         try:
             evidence_items = json.loads(analysis_evidence_json)
@@ -49,6 +49,8 @@ def map_job_posting_row(row: tuple) -> JobPostingRead:
                     why = f"Matched {category.replace('_', ' ')} keyword: {keyword}"
                 elif keyword:
                     why = f"Matched keyword: {keyword}"
+                else:
+                    why = "Evidence-backed match from latest analysis run."
         except Exception:
             pass
     elif analysis_matched_keywords_json:
@@ -59,11 +61,10 @@ def map_job_posting_row(row: tuple) -> JobPostingRead:
             keywords = (hard[:2] + soft[:1])
             if keywords:
                 why = f"Matched keywords: {', '.join(keywords)}"
+            else:
+                why = "Keyword overlap from latest analysis run."
         except Exception:
             pass
-
-    if why == "Basic match derived from career page job-link heuristics." and description_text:
-        why = description_text[:160]
 
     return JobPostingRead(
         id=row[0],
