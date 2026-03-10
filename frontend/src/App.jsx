@@ -4,14 +4,20 @@ import { NavLink, Navigate, Route, Routes, useParams } from "react-router-dom";
 import ApplicationsPage from "./pages/ApplicationsPage";
 import ComparisonReportPage from "./pages/ComparisonReportPage";
 import CompaniesPage from "./pages/CompaniesPage";
+import CompanyPage from "./pages/CompanyPage";
 import DashboardPage from "./pages/DashboardPage";
-import PostingsPage from "./pages/PostingsPage";
+import FetchLogsPage from "./pages/FetchLogsPage";
 import ResumesPage from "./pages/ResumesPage";
 import SettingsPage from "./pages/SettingsPage";
 
 function LegacyComparisonRedirect() {
   const { comparisonReportId } = useParams();
-  return <Navigate to={`/postings/reports/${comparisonReportId}`} replace />;
+  return <Navigate to={`/applications/application/${comparisonReportId}`} replace />;
+}
+
+function LegacyPostingsReportRedirect() {
+  const { comparisonReportId } = useParams();
+  return <Navigate to={`/applications/application/${comparisonReportId}`} replace />;
 }
 
 export default function App() {
@@ -54,9 +60,6 @@ export default function App() {
           <NavLink to="/resumes" className={navClassName}>
             Resumes
           </NavLink>
-          <NavLink to="/postings" className={navClassName}>
-            Postings
-          </NavLink>
           <NavLink to="/settings" className={navClassName}>
             Settings
           </NavLink>
@@ -66,11 +69,15 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/fetch-logs" element={<FetchLogsPage />} />
           <Route path="/companies" element={<CompaniesPage />} />
+          <Route path="/companies/:companyId" element={<CompanyPage />} />
           <Route path="/applications" element={<ApplicationsPage />} />
+          <Route path="/applications/application/:comparisonReportId" element={<ComparisonReportPage />} />
           <Route path="/resumes" element={<ResumesPage />} />
-          <Route path="/postings" element={<PostingsPage />} />
-          <Route path="/postings/reports/:comparisonReportId" element={<ComparisonReportPage />} />
+          {/* Legacy redirects */}
+          <Route path="/postings" element={<Navigate to="/applications" replace />} />
+          <Route path="/postings/reports/:comparisonReportId" element={<LegacyPostingsReportRedirect />} />
           <Route path="/comparisons/:comparisonReportId" element={<LegacyComparisonRedirect />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>

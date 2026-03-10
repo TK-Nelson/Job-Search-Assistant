@@ -20,6 +20,47 @@ def _followed_company_count(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
+def _get_routine(conn: sqlite3.Connection) -> dict | None:
+    """Load the single fetch routine if one exists."""
+    row = conn.execute(
+        "SELECT id, title_keywords_json, description_keywords_json, keyword_match_mode, "
+        "company_ids_json, use_followed_companies FROM fetch_routines ORDER BY id LIMIT 1"
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "title_keywords": json.loads(row[1] or "[]"),
+        "description_keywords": json.loads(row[2] or "[]"),
+        "keyword_match_mode": row[3] or "any",
+        "company_ids": json.loads(row[4] or "[]"),
+        "use_followed_companies": bool(row[5]),
+    }
+
+
+def _resolve_companies(conn: sqlite3.Connection, routine: dict | None) -> list[tuple]:
+    """Determine which companies to fetch based on routine config."""
+    if routine:
+        ids_set: set[int] = set()
+        if routine["use_followed_companies"]:
+            rows = conn.execute("SELECT id FROM companies WHERE followed = 1").fetchall()
+            ids_set.update(r[0] for r in rows)
+        if routine["company_ids"]:
+            ids_set.update(routine["company_ids"])
+        if not ids_set:
+            return []
+        placeholders = ",".join("?" for _ in ids_set)
+        return conn.execute(
+            f"SELECT id, name, careers_url FROM companies WHERE id IN ({placeholders}) ORDER BY id ASC",
+            list(ids_set),
+        ).fetchall()
+    else:
+        # Legacy fallback: all followed companies
+        return conn.execute(
+            "SELECT id, name, careers_url FROM companies WHERE followed = 1 ORDER BY id ASC"
+        ).fetchall()
+
+
 def start_and_complete_fetch_run() -> FetchRunRead:
     settings = get_settings()
 
@@ -31,13 +72,14 @@ def start_and_complete_fetch_run() -> FetchRunRead:
                     detail={"code": "CONFLICT", "message": "A fetch run is already in progress."},
                 )
 
-            followed_count = _followed_company_count(conn)
-            if followed_count <= 0:
+            routine = _get_routine(conn)
+            companies_rows = _resolve_companies(conn, routine)
+            if not companies_rows:
                 raise HTTPException(
                     status_code=400,
                     detail={
                         "code": "VALIDATION_ERROR",
-                        "message": "No followed companies are configured. Add at least one followed company before running fetch.",
+                        "message": "No companies to fetch. Configure a fetch routine or follow at least one company.",
                     },
                 )
 
@@ -49,15 +91,26 @@ def start_and_complete_fetch_run() -> FetchRunRead:
             )
             run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-            companies_rows = conn.execute(
-                "SELECT id, name, careers_url FROM companies WHERE followed = 1 ORDER BY id ASC"
-            ).fetchall()
             companies_checked = len(companies_rows)
             postings_new = 0
             postings_updated = 0
             postings_skipped = 0
             postings_filtered_out = 0
             all_errors: list[str] = []
+
+            # Merge routine keywords with settings-level filters
+            filter_enabled = settings.fetch.role_filters.enabled
+            title_contains = list(settings.fetch.role_filters.title_contains)
+            description_contains = list(settings.fetch.role_filters.description_contains)
+            match_mode = settings.fetch.role_filters.match_mode
+
+            if routine:
+                if routine["title_keywords"] or routine["description_keywords"]:
+                    filter_enabled = True
+                title_contains = list(set(title_contains + routine["title_keywords"]))
+                description_contains = list(set(description_contains + routine["description_keywords"]))
+                if routine["keyword_match_mode"]:
+                    match_mode = routine["keyword_match_mode"]
 
             for company_id, company_name, careers_url in companies_rows:
                 new_count, updated_count, skipped_count, filtered_out_count, errors = ingest_company_careers_page(
@@ -67,10 +120,10 @@ def start_and_complete_fetch_run() -> FetchRunRead:
                     careers_url=careers_url,
                     timeout_seconds=settings.fetch.timeout_seconds,
                     max_retries=settings.fetch.max_retries,
-                    role_filter_enabled=settings.fetch.role_filters.enabled,
-                    role_filter_title_contains=settings.fetch.role_filters.title_contains,
-                    role_filter_description_contains=settings.fetch.role_filters.description_contains,
-                    role_filter_match_mode=settings.fetch.role_filters.match_mode,
+                    role_filter_enabled=filter_enabled,
+                    role_filter_title_contains=title_contains,
+                    role_filter_description_contains=description_contains,
+                    role_filter_match_mode=match_mode,
                 )
                 postings_new += new_count
                 postings_updated += updated_count
@@ -106,6 +159,14 @@ def start_and_complete_fetch_run() -> FetchRunRead:
                 ),
             )
             conn.commit()
+
+            # Update routine last_run_at
+            if routine:
+                conn.execute(
+                    "UPDATE fetch_routines SET last_run_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+                    (routine["id"],),
+                )
+                conn.commit()
 
             row = conn.execute(
                 """

@@ -3,7 +3,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS companies (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  careers_url TEXT NOT NULL,
+  careers_url TEXT,
   industry TEXT,
   logo_url TEXT,
   followed INTEGER NOT NULL DEFAULT 1 CHECK (followed IN (0,1)),
@@ -31,6 +31,11 @@ CREATE TABLE IF NOT EXISTS job_postings (
   first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','stale','removed')),
+  salary_range TEXT,
+  seniority_level TEXT,
+  workplace_type TEXT,
+  years_experience TEXT,
+  commitment_type TEXT,
   FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE,
   UNIQUE(fingerprint)
 );
@@ -118,6 +123,21 @@ CREATE TABLE IF NOT EXISTS fetch_runs (
   postings_skipped INTEGER NOT NULL DEFAULT 0,
   postings_filtered_out INTEGER NOT NULL DEFAULT 0,
   errors_json TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS fetch_routines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title_keywords_json TEXT NOT NULL DEFAULT '[]',
+  description_keywords_json TEXT NOT NULL DEFAULT '[]',
+  keyword_match_mode TEXT NOT NULL DEFAULT 'any' CHECK (keyword_match_mode IN ('any','all')),
+  max_role_age_days INTEGER NOT NULL DEFAULT 14,
+  frequency_minutes INTEGER NOT NULL DEFAULT 720,
+  company_ids_json TEXT NOT NULL DEFAULT '[]',
+  use_followed_companies INTEGER NOT NULL DEFAULT 1 CHECK (use_followed_companies IN (0,1)),
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+  last_run_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS comparison_reports (

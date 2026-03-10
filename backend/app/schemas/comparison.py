@@ -96,6 +96,7 @@ class ComparisonChatGptImportResponse(BaseModel):
 
 class ComparisonDecisionRequest(BaseModel):
     applied: bool
+    target_salary: str | None = None
 
 
 class ComparisonDecisionResponse(BaseModel):
@@ -108,6 +109,11 @@ class ComparisonParsedInfoUpdateRequest(BaseModel):
     company_name: str | None = None
     title: str | None = None
     location: str | None = None
+    salary_range: str | None = None
+    seniority_level: str | None = None
+    workplace_type: str | None = None
+    years_experience: str | None = None
+    commitment_type: str | None = None
 
 
 class ComparisonParsedInfoUpdateResponse(BaseModel):
@@ -115,6 +121,11 @@ class ComparisonParsedInfoUpdateResponse(BaseModel):
     company_name: str
     title: str
     location: str | None
+    salary_range: str | None
+    seniority_level: str | None
+    workplace_type: str | None
+    years_experience: str | None
+    commitment_type: str | None
 
 
 def map_comparison_list_item(row: tuple) -> ComparisonReportListItem:

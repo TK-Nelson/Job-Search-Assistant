@@ -58,6 +58,10 @@ def _apply_runtime_migrations(conn: sqlite3.Connection) -> None:
         )
         conn.execute("UPDATE job_postings SET created_via = 'ingestion' WHERE created_via IS NULL OR created_via = ''")
 
+    for col in ("salary_range", "seniority_level", "workplace_type", "years_experience", "commitment_type"):
+        if not _column_exists(conn, "job_postings", col):
+            conn.execute(f"ALTER TABLE job_postings ADD COLUMN {col} TEXT")
+
     if not _column_exists(conn, "fetch_runs", "postings_filtered_out"):
         conn.execute("ALTER TABLE fetch_runs ADD COLUMN postings_filtered_out INTEGER NOT NULL DEFAULT 0")
 
@@ -94,6 +98,71 @@ def _apply_runtime_migrations(conn: sqlite3.Connection) -> None:
     if not _column_exists(conn, "comparison_reports", "chatgpt_response_json"):
         conn.execute("ALTER TABLE comparison_reports ADD COLUMN chatgpt_response_json TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_comparison_reports_created ON comparison_reports(created_at DESC)")
+
+    # --- fetch_routines table ---
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fetch_routines (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title_keywords_json TEXT NOT NULL DEFAULT '[]',
+          description_keywords_json TEXT NOT NULL DEFAULT '[]',
+          keyword_match_mode TEXT NOT NULL DEFAULT 'any',
+          max_role_age_days INTEGER NOT NULL DEFAULT 14,
+          frequency_minutes INTEGER NOT NULL DEFAULT 720,
+          company_ids_json TEXT NOT NULL DEFAULT '[]',
+          use_followed_companies INTEGER NOT NULL DEFAULT 1,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          last_run_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+
+    # --- archival / lifecycle columns on job_postings ---
+    if not _column_exists(conn, "job_postings", "archived_at"):
+        conn.execute("ALTER TABLE job_postings ADD COLUMN archived_at TEXT")
+
+    if not _column_exists(conn, "job_postings", "last_viewed_at"):
+        conn.execute("ALTER TABLE job_postings ADD COLUMN last_viewed_at TEXT")
+
+    # --- portal_type + portal_config on companies ---
+    if not _column_exists(conn, "companies", "portal_type"):
+        conn.execute("ALTER TABLE companies ADD COLUMN portal_type TEXT NOT NULL DEFAULT 'html'")
+
+    if not _column_exists(conn, "companies", "portal_config_json"):
+        conn.execute("ALTER TABLE companies ADD COLUMN portal_config_json TEXT")
+
+    # --- Make careers_url nullable (was NOT NULL) ---
+    info = conn.execute("PRAGMA table_info(companies)").fetchall()
+    careers_col = next((r for r in info if r[1] == "careers_url"), None)
+    if careers_col and careers_col[3] == 1:  # notnull flag is 1
+        # Collect current column names so we INSERT the right set
+        col_names = [r[1] for r in info]
+        cols_csv = ", ".join(col_names)
+        conn.executescript(f"""
+            PRAGMA foreign_keys = OFF;
+            CREATE TABLE companies_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL,
+              careers_url TEXT,
+              industry TEXT,
+              logo_url TEXT,
+              followed INTEGER NOT NULL DEFAULT 1 CHECK (followed IN (0,1)),
+              notes TEXT,
+              last_checked_at TEXT,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+              portal_type TEXT NOT NULL DEFAULT 'html',
+              portal_config_json TEXT,
+              UNIQUE(name, careers_url)
+            );
+            INSERT INTO companies_new ({cols_csv})
+              SELECT {cols_csv} FROM companies;
+            DROP TABLE companies;
+            ALTER TABLE companies_new RENAME TO companies;
+            PRAGMA foreign_keys = ON;
+        """)
 
 
 def initialize_database() -> None:

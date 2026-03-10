@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.core.logo import build_logo_url, extract_domain, resolve_logo_domain
 from app.db.database import get_connection
 from app.schemas.company import CompanyCreate, CompanyListResponse, CompanyRead, CompanyUpdate, map_company_row
 
@@ -81,31 +82,58 @@ def list_companies(followed: bool | None = Query(default=None)) -> CompanyListRe
 
 @router.put("/companies/{company_id}", response_model=CompanyRead)
 def update_company(company_id: int, payload: CompanyUpdate) -> CompanyRead:
-    effective_url = (payload.careers_url or "").strip()
+    effective_url = (payload.careers_url or "").strip() if "careers_url" in payload.model_fields_set else None
     if effective_url:
         _validate_url(effective_url)
 
     with get_connection() as conn:
-        current = conn.execute("SELECT id FROM companies WHERE id = ?", (company_id,)).fetchone()
+        current = conn.execute(
+            "SELECT id, name, careers_url, industry, logo_url, followed, notes FROM companies WHERE id = ?",
+            (company_id,),
+        ).fetchone()
         if not current:
             raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Company not found."})
 
+        # Build SET clause dynamically – only update fields the caller actually sent.
+        # This prevents accidental nulling of logo_url, careers_url, etc.
+        sent = payload.model_fields_set
+        set_clauses: list[str] = []
+        params: list = []
+
+        if "name" in sent:
+            set_clauses.append("name = ?")
+            params.append(payload.name.strip())
+        if "careers_url" in sent:
+            set_clauses.append("careers_url = ?")
+            params.append(effective_url)
+        if "industry" in sent:
+            set_clauses.append("industry = ?")
+            params.append(payload.industry)
+        if "logo_url" in sent:
+            set_clauses.append("logo_url = ?")
+            params.append(payload.logo_url)
+        if "followed" in sent:
+            set_clauses.append("followed = ?")
+            params.append(int(payload.followed))
+        if "notes" in sent:
+            set_clauses.append("notes = ?")
+            params.append(payload.notes)
+
+        if not set_clauses:
+            # Nothing to change – just return current state
+            row = conn.execute(
+                "SELECT id, name, careers_url, industry, logo_url, followed, notes, last_checked_at, created_at, updated_at FROM companies WHERE id = ?",
+                (company_id,),
+            ).fetchone()
+            return map_company_row(row)
+
+        set_clauses.append("updated_at = datetime('now')")
+        params.append(company_id)
+
         try:
             conn.execute(
-                """
-                UPDATE companies
-                SET name = ?, careers_url = ?, industry = ?, logo_url = ?, followed = ?, notes = ?, updated_at = datetime('now')
-                WHERE id = ?
-                """,
-                (
-                    payload.name.strip(),
-                    effective_url,
-                    payload.industry,
-                    payload.logo_url,
-                    int(payload.followed),
-                    payload.notes,
-                    company_id,
-                ),
+                f"UPDATE companies SET {', '.join(set_clauses)} WHERE id = ?",
+                tuple(params),
             )
             conn.commit()
         except Exception as exc:
@@ -140,56 +168,6 @@ def delete_company(company_id: int) -> dict[str, str]:
     return {"status": "deleted"}
 
 
-def _extract_domain(url: str) -> str | None:
-    """Extract the root domain from a URL (e.g. https://careers.nike.com/jobs -> nike.com)."""
-    if not url:
-        return None
-    parsed = urlparse(url)
-    host = parsed.netloc or parsed.path
-    if not host:
-        return None
-    # Remove port
-    host = host.split(":")[0]
-    # Strip common subdomains
-    parts = host.split(".")
-    if len(parts) >= 2:
-        domain = ".".join(parts[-2:])
-    else:
-        domain = host
-    # If the domain is a third-party job board, it won't have the company's logo
-    JOB_BOARD_DOMAINS = {
-        "myworkdayjobs.com", "greenhouse.io", "lever.co", "smartrecruiters.com",
-        "icims.com", "jobvite.com", "jazz.co", "bamboohr.com", "breezy.hr",
-        "workable.com", "ashbyhq.com", "rippling.com", "paylocity.com",
-        "dayforcehcm.com", "ultipro.com", "taleo.net", "successfactors.com",
-    }
-    if domain.lower() in JOB_BOARD_DOMAINS:
-        return None
-    return domain
-
-
-def _resolve_logo_domain(company_name: str, careers_url: str) -> str:
-    """Get the best domain for a company logo, falling back to name-based guess."""
-    # Manual overrides for companies whose name doesn't match their domain
-    DOMAIN_OVERRIDES = {
-        "general motors": "gm.com",
-        "capital one": "capitalone.com",
-        "pnc bank": "pnc.com",
-    }
-    override = DOMAIN_OVERRIDES.get(company_name.strip().lower())
-    if override:
-        return override
-    domain = _extract_domain(careers_url or "")
-    if not domain:
-        name_slug = company_name.strip().lower().replace(" ", "")
-        domain = f"{name_slug}.com"
-    return domain
-
-
-def _build_logo_url(domain: str) -> str:
-    return f"https://img.logo.dev/{domain}?token={LOGO_DEV_TOKEN}&size=64&format=png"
-
-
 @router.post("/companies/{company_id}/refresh-logo", response_model=CompanyRead)
 def refresh_company_logo(company_id: int) -> CompanyRead:
     with get_connection() as conn:
@@ -201,9 +179,7 @@ def refresh_company_logo(company_id: int) -> CompanyRead:
             raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Company not found."})
 
         company = map_company_row(row)
-        domain = _resolve_logo_domain(company.name, company.careers_url or "")
-
-        logo_url = _build_logo_url(domain)
+        logo_url = build_logo_url(company.name, company.careers_url or "")
         conn.execute(
             "UPDATE companies SET logo_url = ?, updated_at = datetime('now') WHERE id = ?",
             (logo_url, company_id),
@@ -225,8 +201,7 @@ def refresh_all_logos() -> dict:
         count = 0
         for row in rows:
             company = map_company_row(row)
-            domain = _resolve_logo_domain(company.name, company.careers_url or "")
-            logo_url = _build_logo_url(domain)
+            logo_url = build_logo_url(company.name, company.careers_url or "")
             conn.execute(
                 "UPDATE companies SET logo_url = ?, updated_at = datetime('now') WHERE id = ?",
                 (logo_url, company.id),

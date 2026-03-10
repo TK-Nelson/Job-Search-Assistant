@@ -2,8 +2,8 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $backendDir = Join-Path $repoRoot "backend"
-$repoRuntimeRoot = Join-Path $repoRoot ".runtime"
-$legacyRuntimeRoot = Join-Path $env:LOCALAPPDATA "JobSearchAssistant"
+# Runtime root is now driven by JSA_RUNTIME_ROOT in backend/.env and loaded
+# by python-dotenv inside config.py — no shell-level injection needed.
 
 $existingBackend = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -and $_.CommandLine -match "uvicorn\s+app\.main:app" }
@@ -19,30 +19,9 @@ if ($null -ne $portListener) {
     exit 1
 }
 
-$env:JOB_SEARCH_ASSISTANT_RUNTIME_ROOT = $repoRuntimeRoot
-Write-Host "Runtime root: $repoRuntimeRoot"
-
-if (!(Test-Path $repoRuntimeRoot)) {
-    New-Item -ItemType Directory -Force -Path $repoRuntimeRoot | Out-Null
-}
-
-$repoDb = Join-Path $repoRuntimeRoot "data\job_assistant.db"
-$legacyDb = Join-Path $legacyRuntimeRoot "data\job_assistant.db"
-if (!(Test-Path $repoDb) -and (Test-Path $legacyDb)) {
-    Write-Host "Seeding repo-local runtime data from: $legacyRuntimeRoot"
-    foreach ($name in @("config", "data", "logs")) {
-        $src = Join-Path $legacyRuntimeRoot $name
-        if (Test-Path $src) {
-            $dst = Join-Path $repoRuntimeRoot $name
-            New-Item -ItemType Directory -Force -Path $dst | Out-Null
-            Copy-Item -Path (Join-Path $src "*") -Destination $dst -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    }
-}
-
 Set-Location $backendDir
 
-# Load .env file if present (keeps secrets out of source code)
+# Load .env file so non-Python tools (pip, etc.) also see the variables.
 $envFile = Join-Path $backendDir ".env"
 if (Test-Path $envFile) {
     Get-Content $envFile | ForEach-Object {
@@ -52,6 +31,23 @@ if (Test-Path $envFile) {
         }
     }
     Write-Host "Loaded environment from .env"
+}
+
+# Resolve runtime root the same way Python does
+$runtimeRoot = $env:JSA_RUNTIME_ROOT
+if (-not $runtimeRoot) { $runtimeRoot = $env:JOB_SEARCH_ASSISTANT_RUNTIME_ROOT }
+if ($runtimeRoot) {
+    # Resolve relative paths against backend/
+    if (-not [System.IO.Path]::IsPathRooted($runtimeRoot)) {
+        $runtimeRoot = [System.IO.Path]::GetFullPath((Join-Path $backendDir $runtimeRoot))
+    }
+} else {
+    $runtimeRoot = Join-Path $env:LOCALAPPDATA "JobSearchAssistant"
+}
+Write-Host "Runtime root: $runtimeRoot"
+
+if (!(Test-Path $runtimeRoot)) {
+    New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
 }
 
 if (!(Test-Path ".venv\Scripts\python.exe")) {

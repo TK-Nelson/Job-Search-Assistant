@@ -1,56 +1,133 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
+  Accordion,
+  ActionIcon,
   Alert,
   Anchor,
   Autocomplete,
+  Avatar,
+  Badge,
   Breadcrumbs,
   Button,
+  Checkbox,
   FileInput,
   Group,
+  Menu,
+  Modal,
+  MultiSelect,
   Paper,
   Select,
   SimpleGrid,
   Stack,
-  Table,
+  TagsInput,
   Text,
   TextInput,
   Textarea,
   Title,
+  Tooltip,
 } from "@mantine/core";
-import { AlertCircle, Info } from "lucide-react";
+import {
+  AlertCircle,
+  Briefcase,
+  ExternalLink,
+  History,
+  Info,
+  MoreVertical,
+  Pencil,
+  Play,
+  Plus,
+  RefreshCw,
+  Settings2,
+  Trash2,
+} from "lucide-react";
 
 import {
+  createApplication,
+  createFetchRoutine,
+  deleteFetchRoutine,
+  deleteJobPosting,
   getCompanies,
   getDashboardSummary,
+  getFetchedRoles,
+  getFetchRoutine,
   getFetchRuns,
   getResumeDiagnostics,
   getResumes,
   runComparison,
   runFetchNow,
   scrapeComparisonUrl,
+  updateFetchRoutine,
   uploadResume,
 } from "../api";
 
-const QUEUED_FETCH_KEY = "job_assistant.fetch_run_queued";
+/* ── Helpers ──────────────────────────────────────────────────── */
+
+const FREQUENCY_OPTIONS = [
+  { value: "120", label: "Every 2 hours" },
+  { value: "360", label: "Every 6 hours" },
+  { value: "720", label: "Every 12 hours" },
+  { value: "1440", label: "Daily" },
+  { value: "10080", label: "Weekly" },
+];
+
+const MAX_AGE_OPTIONS = [
+  { value: "3", label: "3 days" },
+  { value: "7", label: "7 days" },
+  { value: "14", label: "14 days" },
+  { value: "30", label: "30 days" },
+  { value: "60", label: "60 days" },
+  { value: "90", label: "90 days" },
+];
 
 function getStatusTone(message) {
   const text = String(message || "").toLowerCase();
   if (!text) return "info";
   if (text.includes("failed") || text.includes("error")) return "error";
-  if (text.includes("offline") || text.includes("queued")) return "warning";
-  if (text.includes("completed") || text.includes("restored") || text.includes("loaded")) return "success";
+  if (text.includes("offline") || text.includes("queued") || text.includes("warning")) return "warning";
   return "info";
 }
 
+/** Format a UTC or plain date string to "MMM DD, YYYY H:MM AM/PM" */
+function formatDate(value) {
+  if (!value) return "\u2014";
+  const d = value.includes("T") || /^\d{4}-\d{2}-\d{2} /.test(value)
+    ? new Date(value + (value.endsWith("Z") ? "" : "Z"))
+    : new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const hours = d.getHours();
+  const ampm = hours >= 12 ? "PM" : "AM";
+  const h12 = hours % 12 || 12;
+  return `${months[d.getMonth()]} ${String(d.getDate()).padStart(2,"0")}, ${d.getFullYear()} ${h12}:${String(d.getMinutes()).padStart(2,"0")} ${ampm}`;
+}
+
+/* ── Component ────────────────────────────────────────────────── */
+
 export default function DashboardPage() {
   const navigate = useNavigate();
-  const [runs, setRuns] = useState([]);
+
+  /* Data state */
   const [summary, setSummary] = useState(null);
-  const [status, setStatus] = useState("");
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [routine, setRoutine] = useState(undefined); // undefined=loading, null=none
+  const [roles, setRoles] = useState([]);
+  const [rolesTotal, setRolesTotal] = useState(0);
+  const [rolesNewCount, setRolesNewCount] = useState(0);
   const [companies, setCompanies] = useState([]);
   const [resumes, setResumes] = useState([]);
+  const [fetchErrors, setFetchErrors] = useState([]);
+
+  /* UI state */
+  const [status, setStatus] = useState("");
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [isRunningNow, setIsRunningNow] = useState(false);
+  const [isRunningComparison, setIsRunningComparison] = useState(false);
+  const [isUploadingResume, setIsUploadingResume] = useState(false);
+  const [isScrapingComparisonUrl, setIsScrapingComparisonUrl] = useState(false);
+  const [routineModalOpen, setRoutineModalOpen] = useState(false);
+  const [isSavingRoutine, setIsSavingRoutine] = useState(false);
+
+  /* Comparison form */
   const [comparisonForm, setComparisonForm] = useState({
     sourceType: "online",
     sourceText: "",
@@ -61,32 +138,45 @@ export default function DashboardPage() {
     evaluationMode: "chatgpt_api",
   });
   const [uploadFile, setUploadFile] = useState(null);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isRunningNow, setIsRunningNow] = useState(false);
-  const [isLoadingRuns, setIsLoadingRuns] = useState(true);
-  const [isRunningComparison, setIsRunningComparison] = useState(false);
-  const [isUploadingResume, setIsUploadingResume] = useState(false);
-  const [isScrapingComparisonUrl, setIsScrapingComparisonUrl] = useState(false);
+
+  /* Routine form (modal) */
+  const [routineForm, setRoutineForm] = useState({
+    title_keywords: [],
+    description_keywords: [],
+    keyword_match_mode: "any",
+    max_role_age_days: "14",
+    frequency_minutes: "720",
+    company_ids: [],
+    use_followed_companies: true,
+  });
+
+  /* ── Loaders ────────────────────────────────────────────────── */
 
   async function loadSummary() {
     try {
-      const result = await getDashboardSummary();
-      setSummary(result);
+      setSummary(await getDashboardSummary());
     } catch (err) {
       setStatus(`Failed to load dashboard summary: ${err.message}`);
     }
   }
 
-  async function loadRuns() {
-    setIsLoadingRuns(true);
+  async function loadRoutine() {
     try {
-      const result = await getFetchRuns(20);
-      setRuns(result.items || []);
-      setStatus(`Loaded ${result.items?.length || 0} fetch run(s).`);
-    } catch (err) {
-      setStatus(`Failed to load fetch runs: ${err.message}`);
-    } finally {
-      setIsLoadingRuns(false);
+      const r = await getFetchRoutine();
+      setRoutine(r ?? null);
+    } catch {
+      setRoutine(null);
+    }
+  }
+
+  async function loadRoles() {
+    try {
+      const result = await getFetchedRoles(50, 0);
+      setRoles(result.items || []);
+      setRolesTotal(result.total || 0);
+      setRolesNewCount(result.new_count || 0);
+    } catch {
+      /* silent — roles table just stays empty */
     }
   }
 
@@ -94,8 +184,27 @@ export default function DashboardPage() {
     try {
       const result = await getCompanies();
       setCompanies(result.items || []);
-    } catch (err) {
-      setStatus(`Failed to load companies: ${err.message}`);
+    } catch {
+      /* silent */
+    }
+  }
+
+  async function loadFetchErrors() {
+    try {
+      const result = await getFetchRuns(1);
+      const latestRun = (result.items || [])[0];
+      if (latestRun) {
+        try {
+          const errs = JSON.parse(latestRun.errors_json || "[]");
+          setFetchErrors(Array.isArray(errs) ? errs : []);
+        } catch {
+          setFetchErrors([]);
+        }
+      } else {
+        setFetchErrors([]);
+      }
+    } catch {
+      /* silent */
     }
   }
 
@@ -104,71 +213,40 @@ export default function DashboardPage() {
       const result = await getResumes();
       const items = result.items || [];
       setResumes(items);
-      setComparisonForm((current) => {
-        if (current.resumeVersionId || items.length === 0) return current;
-        return { ...current, resumeVersionId: String(items[0].id) };
+      setComparisonForm((c) => {
+        if (c.resumeVersionId || items.length === 0) return c;
+        return { ...c, resumeVersionId: String(items[0].id) };
       });
-    } catch (err) {
-      setStatus(`Failed to load resumes: ${err.message}`);
+    } catch {
+      /* silent */
     }
   }
 
   useEffect(() => {
-    const onOnline = async () => {
-      setIsOnline(true);
-      const queued = localStorage.getItem(QUEUED_FETCH_KEY) === "1";
-      if (queued) {
-        setStatus("Connection restored. Running queued fetch...");
-        try {
-          await runFetchNow();
-          localStorage.removeItem(QUEUED_FETCH_KEY);
-          setStatus("Queued fetch completed.");
-          await loadSummary();
-          await loadRuns();
-        } catch (err) {
-          setStatus(`Queued fetch failed: ${err.message}`);
-        }
-      }
-    };
-    const onOffline = () => {
-      setIsOnline(false);
-      setStatus("Offline: fetch operations will be queued and retried when online.");
-    };
-
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
-
     loadSummary();
-    loadRuns();
+    loadRoutine();
+    loadRoles();
     loadCompanies();
     loadResumes();
-
+    loadFetchErrors();
     return () => {
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
     };
   }, []);
 
+  /* ── Actions ────────────────────────────────────────────────── */
+
   async function onRunNow() {
-    if (summary && Number(summary.followed_companies_count || 0) <= 0) {
-      setStatus("Add at least one followed company before running fetch.");
-      return;
-    }
-
-    if (!navigator.onLine) {
-      localStorage.setItem(QUEUED_FETCH_KEY, "1");
-      setStatus("Offline: fetch request queued. It will run automatically when connection is restored.");
-      return;
-    }
-
     setIsRunningNow(true);
-    setStatus("Running fetch now...");
+    setStatus("");
     try {
       await runFetchNow();
-      localStorage.removeItem(QUEUED_FETCH_KEY);
-      setStatus("Fetch run completed.");
-      await loadSummary();
-      await loadRuns();
+      await Promise.all([loadSummary(), loadRoles(), loadFetchErrors()]);
     } catch (err) {
       setStatus(`Fetch failed: ${err.message}`);
     } finally {
@@ -176,38 +254,122 @@ export default function DashboardPage() {
     }
   }
 
-  async function onRefresh() {
-    setIsRefreshing(true);
-    setStatus("Refreshing dashboard...");
+  async function onDeleteRole(postingId) {
     try {
-      await loadSummary();
-      await loadRuns();
-    } finally {
-      setIsRefreshing(false);
+      await deleteJobPosting(postingId);
+      setRoles((prev) => prev.filter((r) => r.id !== postingId));
+      setRolesTotal((t) => Math.max(0, t - 1));
+    } catch (err) {
+      setStatus(`Failed to delete role: ${err.message}`);
     }
   }
 
+  async function onMarkAsApplied(role) {
+    try {
+      await createApplication({
+        job_posting_id: role.id,
+        stage: "applied",
+        applied_at: new Date().toISOString().slice(0, 10),
+      });
+      setRoles((prev) => prev.filter((r) => r.id !== role.id));
+      setRolesTotal((t) => Math.max(0, t - 1));
+      await loadSummary();
+    } catch (err) {
+      setStatus(`Failed to mark as applied: ${err.message}`);
+    }
+  }
+
+  async function onSaveRoutine() {
+    setIsSavingRoutine(true);
+    try {
+      const payload = {
+        title_keywords: routineForm.title_keywords,
+        description_keywords: routineForm.description_keywords,
+        keyword_match_mode: routineForm.keyword_match_mode,
+        max_role_age_days: Number(routineForm.max_role_age_days),
+        frequency_minutes: Number(routineForm.frequency_minutes),
+        company_ids: routineForm.company_ids.map(Number),
+        use_followed_companies: routineForm.use_followed_companies,
+      };
+
+      let saved;
+      if (routine) {
+        saved = await updateFetchRoutine(payload);
+      } else {
+        saved = await createFetchRoutine(payload);
+      }
+      setRoutine(saved);
+      setRoutineModalOpen(false);
+
+      // Trigger an immediate fetch after first routine creation
+      if (!routine) {
+        setIsRunningNow(true);
+        try {
+          await runFetchNow();
+          await Promise.all([loadSummary(), loadRoles(), loadFetchErrors()]);
+        } catch (err) {
+          setStatus(`Initial fetch failed: ${err.message}`);
+        } finally {
+          setIsRunningNow(false);
+        }
+      } else {
+        await loadRoles();
+      }
+    } catch (err) {
+      setStatus(`Failed to save fetch routine: ${err.message}`);
+    } finally {
+      setIsSavingRoutine(false);
+    }
+  }
+
+  async function onDeleteRoutine() {
+    try {
+      await deleteFetchRoutine();
+      setRoutine(null);
+    } catch (err) {
+      setStatus(`Failed to delete routine: ${err.message}`);
+    }
+  }
+
+  function openRoutineModal() {
+    if (routine) {
+      setRoutineForm({
+        title_keywords: routine.title_keywords || [],
+        description_keywords: routine.description_keywords || [],
+        keyword_match_mode: routine.keyword_match_mode || "any",
+        max_role_age_days: String(routine.max_role_age_days ?? 14),
+        frequency_minutes: String(routine.frequency_minutes ?? 720),
+        company_ids: (routine.company_ids || []).map(String),
+        use_followed_companies: routine.use_followed_companies ?? true,
+      });
+    } else {
+      setRoutineForm({
+        title_keywords: [],
+        description_keywords: [],
+        keyword_match_mode: "any",
+        max_role_age_days: "14",
+        frequency_minutes: "720",
+        company_ids: [],
+        use_followed_companies: true,
+      });
+    }
+    setRoutineModalOpen(true);
+  }
+
+  /* Comparison */
   function updateComparisonField(key, value) {
-    setComparisonForm((current) => ({ ...current, [key]: value }));
+    setComparisonForm((c) => ({ ...c, [key]: value }));
   }
 
   async function onUploadResumeInline(event) {
     event.preventDefault();
-    if (!uploadFile) {
-      setStatus("Select a DOCX file first.");
-      return;
-    }
-
+    if (!uploadFile) return;
     setIsUploadingResume(true);
-    setStatus("Uploading resume...");
     try {
       const result = await uploadResume(uploadFile);
       setUploadFile(null);
       await loadResumes();
-      if (result.resume_version_id) {
-        updateComparisonField("resumeVersionId", String(result.resume_version_id));
-      }
-      setStatus("Resume uploaded and selected for comparison.");
+      if (result.resume_version_id) updateComparisonField("resumeVersionId", String(result.resume_version_id));
     } catch (err) {
       setStatus(`Resume upload failed: ${err.message}`);
     } finally {
@@ -217,36 +379,29 @@ export default function DashboardPage() {
 
   async function onRunComparison(event) {
     event.preventDefault();
-
     if (!comparisonForm.resumeVersionId) {
       setStatus("Select or upload a resume before running comparison.");
       return;
     }
-
     if ((comparisonForm.descriptionText || "").trim().length < 40) {
       setStatus("Paste a fuller job description (at least 40 characters).");
       return;
     }
-
     const sourceText = (comparisonForm.sourceText || "").trim();
-    const selectedCompany = companies.find((company) => company.name.toLowerCase() === sourceText.toLowerCase());
-
+    const selectedCompany = companies.find((c) => c.name.toLowerCase() === sourceText.toLowerCase());
     if (!selectedCompany && !sourceText) {
       setStatus("Select a source company or type a company name.");
       return;
     }
-
     setIsRunningComparison(true);
-    setStatus("Running job description comparison...");
-
+    setStatus("");
     try {
       const selectedResumeId = Number(comparisonForm.resumeVersionId);
       const diagnostics = await getResumeDiagnostics(selectedResumeId);
       if (!String(diagnostics?.extracted_text || "").trim()) {
-        setStatus("Warning: selected resume has empty extracted text. Choose a different resume or upload/paste a new one.");
+        setStatus("Warning: selected resume has empty extracted text.");
         return;
       }
-
       const payload = {
         source_company_id: selectedCompany ? selectedCompany.id : undefined,
         source_company_name: selectedCompany ? undefined : sourceText,
@@ -257,8 +412,7 @@ export default function DashboardPage() {
         evaluation_mode: comparisonForm.evaluationMode || "chatgpt_api",
       };
       const result = await runComparison(payload);
-      setStatus(`Comparison complete via ${result.evaluation_source === "chatgpt_api" ? "Chat GPT" : "local engine"}. Opening report...`);
-      navigate(`/postings/reports/${result.comparison_report_id}`);
+      navigate(`/applications/application/${result.comparison_report_id}`);
     } catch (err) {
       setStatus(`Comparison failed: ${err.message}`);
     } finally {
@@ -272,20 +426,16 @@ export default function DashboardPage() {
       setStatus("Enter a URL first, then click Scrape URL.");
       return;
     }
-
     setIsScrapingComparisonUrl(true);
-    setStatus("Scraping URL for role details...");
+    setStatus("");
     try {
       const result = await scrapeComparisonUrl(sourceUrl);
-      setComparisonForm((current) => ({
-        ...current,
-        sourceText: current.sourceText || result.inferred_company_name || "",
-        title: current.title || result.inferred_title || "",
-        descriptionText: result.description_text || current.descriptionText,
+      setComparisonForm((c) => ({
+        ...c,
+        sourceText: c.sourceText || result.inferred_company_name || "",
+        title: c.title || result.inferred_title || "",
+        descriptionText: result.description_text || c.descriptionText,
       }));
-      setStatus(
-        `Scraped ${result.extracted_characters} characters from URL${result.truncation_applied ? " (truncated for size)." : "."}`
-      );
     } catch (err) {
       setStatus(`URL scrape failed: ${err.message}`);
     } finally {
@@ -293,14 +443,23 @@ export default function DashboardPage() {
     }
   }
 
-  const latest = runs[0];
+  /* ── Derived data ───────────────────────────────────────────── */
+
   const statusTone = getStatusTone(status);
-  const statusColor = statusTone === "error" ? "red" : statusTone === "warning" ? "yellow" : statusTone === "success" ? "teal" : "blue";
-  const companyOptions = companies.map((company) => ({ value: company.name, label: company.name }));
-  const resumeOptions = resumes.map((resume) => ({
-    value: String(resume.id),
-    label: `${resume.source_name} (${resume.version_tag})`,
+  const statusColor = statusTone === "error" ? "red" : statusTone === "warning" ? "yellow" : "blue";
+  const companyOptions = [...new Map(companies.map((c) => [c.name, c])).values()].map((c) => ({
+    value: c.name,
+    label: c.name,
   }));
+  const companyMultiSelectData = companies.map((c) => ({ value: String(c.id), label: c.name }));
+  const resumeOptions = resumes.map((r) => ({
+    value: String(r.id),
+    label: `${r.source_name} (${r.version_tag})`,
+  }));
+  const hasRoutine = routine !== undefined && routine !== null;
+  const isLoading = routine === undefined;
+
+  /* ── Render ─────────────────────────────────────────────────── */
 
   return (
     <Stack gap="md">
@@ -309,120 +468,223 @@ export default function DashboardPage() {
         <Text size="sm">Overview</Text>
       </Breadcrumbs>
 
-      <Paper withBorder p="lg" radius="md">
-      <Title order={2}>Dashboard</Title>
-      <Text c="dimmed" size="sm">Fetch pipeline status and direct job-description comparison workflow.</Text>
+      {/* ── Summary statistics ─────────────────────────────────── */}
+      {summary && (
+        <SimpleGrid cols={{ base: 2, sm: 4 }}>
+          <Paper withBorder p="md" radius="md">
+            <Text c="dimmed" size="sm">Followed Companies</Text>
+            <Title order={3}>{summary.followed_companies_count}</Title>
+          </Paper>
+          <Paper withBorder p="md" radius="md">
+            <Text c="dimmed" size="sm">Active Postings</Text>
+            <Title order={3}>{summary.active_postings_count}</Title>
+          </Paper>
+          <Paper withBorder p="md" radius="md">
+            <Text c="dimmed" size="sm">Applications</Text>
+            <Title order={3}>{summary.applications_total_count}</Title>
+          </Paper>
+          <Paper withBorder p="md" radius="md">
+            <Text c="dimmed" size="sm">New Postings (7d)</Text>
+            <Title order={3}>{summary.recent_postings_count_7d}</Title>
+          </Paper>
+        </SimpleGrid>
+      )}
 
-      <Group mt="md">
-        <Button onClick={onRunNow} loading={isRunningNow}>Run fetch now</Button>
-        <Button variant="light" onClick={onRefresh} loading={isRefreshing} disabled={isRunningNow}>Refresh</Button>
-        {!isOnline && <Text c="dimmed" size="sm">Offline</Text>}
-      </Group>
-
-      {status && (
-        <Alert mt="md" color={statusColor} icon={statusTone === "error" ? <AlertCircle size={16} /> : <Info size={16} />} variant="light">
+      {/* ── Status alert (warnings/errors only) ───────────────── */}
+      {status && (statusTone === "error" || statusTone === "warning") && (
+        <Alert
+          color={statusColor}
+          icon={statusTone === "error" ? <AlertCircle size={16} /> : <Info size={16} />}
+          variant="light"
+          withCloseButton
+          onClose={() => setStatus("")}
+        >
           {status}
         </Alert>
       )}
 
       <div className="dashboard-grid">
+        {/* ── LEFT COLUMN: Fetch routine + roles ───────────────── */}
         <section className="dashboard-main">
-          <Paper withBorder p="md" radius="md">
-            <Text fw={600} size="sm">New Roles From Followed</Text>
-            <Title order={3}>{summary?.new_roles_from_followed_last_run ?? 0}</Title>
-            <Text c="dimmed" size="sm">
-              {summary?.latest_fetch_run_id
-                ? `From fetch run #${summary.latest_fetch_run_id}${summary.latest_fetch_completed_at ? ` (${summary.latest_fetch_completed_at})` : ""}`
-                : "No completed fetch run yet."}
-            </Text>
-          </Paper>
+          {isLoading ? (
+            <Paper withBorder p="xl" radius="md">
+              <Text c="dimmed">Loading...</Text>
+            </Paper>
+          ) : !hasRoutine ? (
+            /* ── Zero state ─────────────────────────────────────── */
+            <Paper withBorder p="xl" radius="md">
+              <Stack align="center" gap="md" py="xl">
+                <RefreshCw size={48} strokeWidth={1.2} color="var(--mantine-color-dimmed)" />
+                <Title order={3} ta="center">No fetch routine configured</Title>
+                <Text c="dimmed" ta="center" maw={420}>
+                  Create a fetch routine to automatically search for new roles across your followed companies.
+                  Define keywords, set a schedule, and choose which companies to watch.
+                </Text>
+                <Button leftSection={<Plus size={16} />} onClick={openRoutineModal} size="md">
+                  Create fetch routine
+                </Button>
+              </Stack>
+            </Paper>
+          ) : (
+            /* ── Active state: roles table ─────────────────────── */
+            <Paper withBorder p="md" radius="md">
+              {/* Table title line */}
+              <Group justify="space-between" mb="md">
+                <div>
+                  <Group gap="xs">
+                    <Title order={4}>Fetched Roles</Title>
+                    {rolesNewCount > 0 && (
+                      <Badge variant="light" color="teal" size="lg">
+                        {rolesNewCount} new
+                      </Badge>
+                    )}
+                    <Text c="dimmed" size="sm">{rolesTotal} total</Text>
+                  </Group>
+                  <Text c="dimmed" size="xs" mt={2}>
+                    {FREQUENCY_OPTIONS.find((f) => f.value === String(routine.frequency_minutes))?.label || `${routine.frequency_minutes}m`}
+                  </Text>
+                </div>
+                <Group gap="xs">
+                  <Tooltip label="Run fetch now">
+                    <ActionIcon variant="light" onClick={onRunNow} loading={isRunningNow} size="lg">
+                      <Play size={16} />
+                    </ActionIcon>
+                  </Tooltip>
+                  <Tooltip label="Edit routine">
+                    <ActionIcon variant="light" onClick={openRoutineModal} size="lg">
+                      <Settings2 size={16} />
+                    </ActionIcon>
+                  </Tooltip>
+                  <Tooltip label="Fetch logs">
+                    <ActionIcon variant="light" component={Link} to="/fetch-logs" size="lg">
+                      <History size={16} />
+                    </ActionIcon>
+                  </Tooltip>
+                </Group>
+              </Group>
 
-          {summary && (
-            <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} mt="md">
-              <Paper withBorder p="md" radius="md"><Text c="dimmed" size="sm">Applications</Text><Title order={4}>{summary.applications_total_count}</Title></Paper>
-              <Paper withBorder p="md" radius="md"><Text c="dimmed" size="sm">Followed Companies</Text><Title order={4}>{summary.followed_companies_count}</Title></Paper>
-              <Paper withBorder p="md" radius="md"><Text c="dimmed" size="sm">Active Postings</Text><Title order={4}>{summary.active_postings_count}</Title></Paper>
-              <Paper withBorder p="md" radius="md"><Text c="dimmed" size="sm">New Postings (7d)</Text><Title order={4}>{summary.recent_postings_count_7d}</Title></Paper>
-            </SimpleGrid>
-          )}
-
-          {summary && (
-            <Paper withBorder p="md" radius="md" mt="md">
-              <Text fw={600} mb="xs">Applications by Stage</Text>
-              {summary.applications_by_stage.length > 0 ? (
-                <SimpleGrid cols={{ base: 1, sm: 2 }}>
-                  {summary.applications_by_stage.map((item) => (
-                    <Text key={item.stage}><Text component="span" fw={600}>{item.stage}:</Text> {item.count}</Text>
-                  ))}
-                </SimpleGrid>
-              ) : (
-                <Text>No applications yet.</Text>
+              {/* Fetch error accordion */}
+              {fetchErrors.length > 0 && (
+                <Accordion variant="contained" radius="md" mt="sm">
+                  <Accordion.Item value="fetch-errors">
+                    <Accordion.Control icon={<AlertCircle size={18} color="var(--mantine-color-red-6)" />}>
+                      <Group gap="xs">
+                        <Text size="sm" fw={600} c="red">{fetchErrors.length} fetch error{fetchErrors.length !== 1 ? "s" : ""} from latest run</Text>
+                      </Group>
+                    </Accordion.Control>
+                    <Accordion.Panel>
+                      <Stack gap={6}>
+                        {fetchErrors.map((err, i) => {
+                          const colonIdx = err.indexOf(": ");
+                          const company = colonIdx > 0 ? err.slice(0, colonIdx) : "Unknown";
+                          const message = colonIdx > 0 ? err.slice(colonIdx + 2) : err;
+                          return (
+                            <Group key={i} gap={8} wrap="nowrap" align="flex-start">
+                              <Badge color="red" variant="light" size="sm" style={{ flexShrink: 0 }}>{company}</Badge>
+                              <Text size="sm">{message}</Text>
+                            </Group>
+                          );
+                        })}
+                      </Stack>
+                    </Accordion.Panel>
+                  </Accordion.Item>
+                </Accordion>
               )}
+
+              {/* Roles table — card-row grid matching platform pattern */}
+              <Paper p="xs" radius="md" mt="xs" style={{ borderBottom: "1px solid var(--mantine-color-gray-3)" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "3.5fr 1.5fr 1.5fr 0.4fr", gap: 12, padding: "6px 8px" }}>
+                  <Text fw={600} size="sm">Role</Text>
+                  <Text fw={600} size="sm">Date Posted</Text>
+                  <Text fw={600} size="sm">First Seen</Text>
+                  <Text fw={600} size="sm"></Text>
+                </div>
+              </Paper>
+
+              <Stack mt="xs" gap="xs">
+                {roles.map((role) => (
+                  <Paper key={role.id} p="sm" radius="md">
+                    <div style={{ display: "grid", gridTemplateColumns: "3.5fr 1.5fr 1.5fr 0.4fr", gap: 12, alignItems: "center" }}>
+                      <Group gap="sm" wrap="nowrap">
+                        <Avatar src={role.company_logo_url} alt={role.company_name} size="md" radius={8}>
+                          {role.company_name?.[0]}
+                        </Avatar>
+                        <Stack gap={2}>
+                          {role.canonical_url && /^https?:\/\//.test(role.canonical_url) ? (
+                            <Anchor href={role.canonical_url} target="_blank" rel="noopener" fw={600} size="sm" lineClamp={1}>
+                              {role.title}
+                            </Anchor>
+                          ) : (
+                            <Text fw={600} size="sm" lineClamp={1}>{role.title}</Text>
+                          )}
+                          <Anchor component={Link} to={`/companies/${role.company_id}`} size="xs" c="dimmed">
+                            {role.company_name}
+                          </Anchor>
+                        </Stack>
+                      </Group>
+                      <Text size="sm" c="dimmed">
+                        {role.posted_date ? formatDate(role.posted_date) : "—"}
+                      </Text>
+                      <Text size="sm" c="dimmed">
+                        {role.first_seen_at ? formatDate(role.first_seen_at) : "—"}
+                      </Text>
+                      <Menu shadow="md" width={200} position="bottom-end" withArrow>
+                        <Menu.Target>
+                          <ActionIcon variant="subtle" size="sm">
+                            <MoreVertical size={16} />
+                          </ActionIcon>
+                        </Menu.Target>
+                        <Menu.Dropdown>
+                          {role.canonical_url && /^https?:\/\//.test(role.canonical_url) && (
+                            <Menu.Item
+                              leftSection={<ExternalLink size={14} />}
+                              component="a"
+                              href={role.canonical_url}
+                              target="_blank"
+                              rel="noopener"
+                            >
+                              View listing
+                            </Menu.Item>
+                          )}
+                          <Menu.Item
+                            leftSection={<Pencil size={14} />}
+                            component={Link}
+                            to={`/applications`}
+                          >
+                            Edit role
+                          </Menu.Item>
+                          <Menu.Item
+                            leftSection={<Briefcase size={14} />}
+                            onClick={() => onMarkAsApplied(role)}
+                          >
+                            Mark as applied
+                          </Menu.Item>
+                          <Menu.Divider />
+                          <Menu.Item
+                            leftSection={<Trash2 size={14} />}
+                            color="red"
+                            onClick={() => onDeleteRole(role.id)}
+                          >
+                            Delete role
+                          </Menu.Item>
+                        </Menu.Dropdown>
+                      </Menu>
+                    </div>
+                  </Paper>
+                ))}
+                {roles.length === 0 && (
+                  <Paper p="md" radius="md">
+                    <Text c="dimmed" ta="center" py="md">
+                      No roles fetched yet. Click the play button to run a fetch.
+                    </Text>
+                  </Paper>
+                )}
+              </Stack>
             </Paper>
           )}
-
-          <Paper withBorder p="md" radius="md" mt="md">
-            <Text fw={600} mb="xs">Latest Fetch Run</Text>
-            {latest ? (
-              <SimpleGrid cols={{ base: 1, sm: 2 }}>
-                <Text><Text component="span" fw={600}>Run ID:</Text> {latest.id}</Text>
-                <Text><Text component="span" fw={600}>Status:</Text> {latest.status}</Text>
-                <Text><Text component="span" fw={600}>Started:</Text> {latest.started_at}</Text>
-                <Text><Text component="span" fw={600}>Completed:</Text> {latest.completed_at || "-"}</Text>
-                <Text><Text component="span" fw={600}>Companies Checked:</Text> {latest.companies_checked}</Text>
-                <Text><Text component="span" fw={600}>New/Updated/Skipped/Filtered:</Text> {latest.postings_new}/{latest.postings_updated}/{latest.postings_skipped}/{latest.postings_filtered_out || 0}</Text>
-              </SimpleGrid>
-            ) : (
-              <Text>No fetch runs yet.</Text>
-            )}
-          </Paper>
-
-          <Table.ScrollContainer minWidth={1100} mt="md">
-            <Table striped highlightOnHover withTableBorder withColumnBorders>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>ID</Table.Th>
-                  <Table.Th>Status</Table.Th>
-                  <Table.Th>Started</Table.Th>
-                  <Table.Th>Completed</Table.Th>
-                  <Table.Th>Companies</Table.Th>
-                  <Table.Th>New</Table.Th>
-                  <Table.Th>Updated</Table.Th>
-                  <Table.Th>Skipped</Table.Th>
-                  <Table.Th>Filtered</Table.Th>
-                  <Table.Th>Errors</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {runs.map((run) => (
-                  <Table.Tr key={run.id}>
-                    <Table.Td>{run.id}</Table.Td>
-                    <Table.Td>{run.status}</Table.Td>
-                    <Table.Td>{run.started_at}</Table.Td>
-                    <Table.Td>{run.completed_at || "-"}</Table.Td>
-                    <Table.Td>{run.companies_checked}</Table.Td>
-                    <Table.Td>{run.postings_new}</Table.Td>
-                    <Table.Td>{run.postings_updated}</Table.Td>
-                    <Table.Td>{run.postings_skipped}</Table.Td>
-                    <Table.Td>{run.postings_filtered_out || 0}</Table.Td>
-                    <Table.Td>{run.errors_json}</Table.Td>
-                  </Table.Tr>
-                ))}
-                {isLoadingRuns && (
-                  <Table.Tr>
-                    <Table.Td colSpan={10}>Loading run history...</Table.Td>
-                  </Table.Tr>
-                )}
-                {runs.length === 0 && !isLoadingRuns && (
-                  <Table.Tr>
-                    <Table.Td colSpan={10}>No run history yet.</Table.Td>
-                  </Table.Tr>
-                )}
-              </Table.Tbody>
-            </Table>
-          </Table.ScrollContainer>
         </section>
 
+        {/* ── RIGHT COLUMN: Comparison rail ────────────────────── */}
         <Paper withBorder p="md" radius="md" className="dashboard-rail">
           <Text fw={600}>Job Description Comparison</Text>
           <Text c="dimmed" size="sm">Paste a role description and evaluate it against a selected resume version.</Text>
@@ -535,7 +797,105 @@ export default function DashboardPage() {
           </form>
         </Paper>
       </div>
-      </Paper>
+
+      {/* ── Create / Edit Fetch Routine Modal ──────────────────── */}
+      <Modal
+        opened={routineModalOpen}
+        onClose={() => setRoutineModalOpen(false)}
+        title={hasRoutine ? "Edit Fetch Routine" : "Create Fetch Routine"}
+        size="lg"
+      >
+        <Stack gap="md">
+          <TagsInput
+            label="Title keywords"
+            description="Roles with titles containing any of these terms will be included"
+            placeholder="e.g. software engineer, data analyst"
+            value={routineForm.title_keywords}
+            onChange={(val) => setRoutineForm((f) => ({ ...f, title_keywords: val }))}
+          />
+
+          <TagsInput
+            label="Description keywords"
+            description="Additional terms to match in role descriptions"
+            placeholder="e.g. python, react, kubernetes"
+            value={routineForm.description_keywords}
+            onChange={(val) => setRoutineForm((f) => ({ ...f, description_keywords: val }))}
+          />
+
+          <Select
+            label="Keyword match mode"
+            description="Match any keyword or require all keywords"
+            data={[
+              { value: "any", label: "Match any keyword" },
+              { value: "all", label: "Match all keywords" },
+            ]}
+            value={routineForm.keyword_match_mode}
+            onChange={(val) => setRoutineForm((f) => ({ ...f, keyword_match_mode: val || "any" }))}
+            allowDeselect={false}
+          />
+
+          <Select
+            label="Max role age"
+            description="Only show roles first seen within this window"
+            data={MAX_AGE_OPTIONS}
+            value={routineForm.max_role_age_days}
+            onChange={(val) => setRoutineForm((f) => ({ ...f, max_role_age_days: val || "14" }))}
+            allowDeselect={false}
+          />
+
+          <Select
+            label="Fetch frequency"
+            description="How often the system checks for new roles"
+            data={FREQUENCY_OPTIONS}
+            value={routineForm.frequency_minutes}
+            onChange={(val) => setRoutineForm((f) => ({ ...f, frequency_minutes: val || "720" }))}
+            allowDeselect={false}
+          />
+
+          <Checkbox
+            label="Include all followed companies"
+            checked={routineForm.use_followed_companies}
+            onChange={(event) => setRoutineForm((f) => ({ ...f, use_followed_companies: event.currentTarget.checked }))}
+          />
+
+          <MultiSelect
+            label="Additional companies"
+            description={routineForm.use_followed_companies ? "Select specific companies to include alongside followed ones" : "Select which companies to fetch roles from"}
+            data={companyMultiSelectData}
+            value={routineForm.company_ids}
+            onChange={(val) => setRoutineForm((f) => ({ ...f, company_ids: val }))}
+            placeholder="Search companies..."
+            searchable
+            clearable
+          />
+
+          <Group justify="space-between" mt="md">
+            <Group>
+              {hasRoutine && (
+                <Button
+                  variant="subtle"
+                  color="red"
+                  leftSection={<Trash2 size={14} />}
+                  onClick={() => {
+                    onDeleteRoutine();
+                    setRoutineModalOpen(false);
+                  }}
+                >
+                  Delete routine
+                </Button>
+              )}
+            </Group>
+            <Group>
+              <Button variant="default" onClick={() => setRoutineModalOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={onSaveRoutine} loading={isSavingRoutine}>
+                {hasRoutine ? "Save changes" : "Create & run fetch"}
+              </Button>
+            </Group>
+          </Group>
+        </Stack>
+      </Modal>
     </Stack>
   );
 }

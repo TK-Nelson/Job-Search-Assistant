@@ -7,6 +7,7 @@ from urllib.request import Request, urlopen
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.core.logo import build_logo_url
 from app.db.database import get_connection
 from app.schemas.analysis import (
     AnalysisEvidenceItem,
@@ -247,13 +248,13 @@ def _resolve_company(conn: sqlite3.Connection, payload: ComparisonRunRequest) ->
     if existing:
         return int(existing[0]), str(existing[1])
 
-    careers_url = payload.source_url.strip() if _looks_like_http_url(payload.source_url) else _company_placeholder_url(source_company_name)
+    logo_url = build_logo_url(source_company_name, "")
     conn.execute(
         """
-        INSERT INTO companies (name, careers_url, followed, notes)
+        INSERT INTO companies (name, logo_url, followed, notes)
         VALUES (?, ?, 0, 'Created from manual comparison input')
         """,
-        (source_company_name, careers_url),
+        (source_company_name, logo_url),
     )
     company_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     return int(company_id), source_company_name
@@ -470,7 +471,7 @@ def run_comparison(payload: ComparisonRunRequest) -> ComparisonRunResponse:
 
 
 @router.get("/comparisons", response_model=ComparisonReportListResponse)
-def list_comparisons(limit: int = Query(default=50, ge=1, le=200)) -> ComparisonReportListResponse:
+def list_comparisons(limit: int = Query(default=50, ge=1, le=1000)) -> ComparisonReportListResponse:
     try:
         with get_connection() as conn:
             rows = conn.execute(
@@ -532,6 +533,13 @@ def get_comparison(comparison_report_id: int) -> ComparisonReportRead:
             ).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Comparison report not found."})
+
+            # Track last_viewed_at on the linked job posting
+            conn.execute(
+                "UPDATE job_postings SET last_viewed_at = datetime('now') WHERE id = ?",
+                (int(row[1]),),
+            )
+            conn.commit()
 
             analysis = _load_analysis_response(conn, int(row[3]))
             prompt_text = None
@@ -615,7 +623,8 @@ def update_comparison_parsed_info(
         with get_connection() as conn:
             row = conn.execute(
                 """
-                SELECT cr.id, cr.job_posting_id, jp.company_id, jp.title, jp.location, c.name
+                SELECT cr.id, cr.job_posting_id, jp.company_id, jp.title, jp.location, c.name,
+                       jp.salary_range, jp.seniority_level, jp.workplace_type, jp.years_experience, jp.commitment_type
                 FROM comparison_reports cr
                 JOIN job_postings jp ON jp.id = cr.job_posting_id
                 JOIN companies c ON c.id = jp.company_id
@@ -631,17 +640,31 @@ def update_comparison_parsed_info(
             current_title = str(row[3])
             current_location = row[4]
             current_company_name = str(row[5])
+            current_salary_range = row[6]
+            current_seniority_level = row[7]
+            current_workplace_type = row[8]
+            current_years_experience = row[9]
+            current_commitment_type = row[10]
 
             new_title = (payload.title or "").strip() or current_title
             new_location = (payload.location or "").strip() if payload.location is not None else current_location
             new_company_name = (payload.company_name or "").strip() or current_company_name
+            new_salary_range = (payload.salary_range or "").strip() if payload.salary_range is not None else current_salary_range
+            new_seniority_level = (payload.seniority_level or "").strip() if payload.seniority_level is not None else current_seniority_level
+            new_workplace_type = (payload.workplace_type or "").strip() if payload.workplace_type is not None else current_workplace_type
+            new_years_experience = (payload.years_experience or "").strip() if payload.years_experience is not None else current_years_experience
+            new_commitment_type = (payload.commitment_type or "").strip() if payload.commitment_type is not None else current_commitment_type
 
             conn.execute(
-                "UPDATE job_postings SET title = ?, location = ? WHERE id = ?",
-                (new_title, new_location, posting_id),
+                """UPDATE job_postings
+                   SET title = ?, location = ?, salary_range = ?, seniority_level = ?,
+                       workplace_type = ?, years_experience = ?, commitment_type = ?
+                   WHERE id = ?""",
+                (new_title, new_location, new_salary_range, new_seniority_level,
+                 new_workplace_type, new_years_experience, new_commitment_type, posting_id),
             )
             conn.execute(
-                "UPDATE companies SET name = ? WHERE id = ?",
+                "UPDATE companies SET name = ?, updated_at = datetime('now') WHERE id = ?",
                 (new_company_name, company_id),
             )
             conn.commit()
@@ -656,6 +679,11 @@ def update_comparison_parsed_info(
             "title": new_title,
             "location": new_location,
             "company_name": new_company_name,
+            "salary_range": new_salary_range,
+            "seniority_level": new_seniority_level,
+            "workplace_type": new_workplace_type,
+            "years_experience": new_years_experience,
+            "commitment_type": new_commitment_type,
         },
     )
 
@@ -664,6 +692,11 @@ def update_comparison_parsed_info(
         company_name=new_company_name,
         title=new_title,
         location=new_location,
+        salary_range=new_salary_range,
+        seniority_level=new_seniority_level,
+        workplace_type=new_workplace_type,
+        years_experience=new_years_experience,
+        commitment_type=new_commitment_type,
     )
 
 
@@ -695,10 +728,10 @@ def set_comparison_application_decision(
                     else:
                         conn.execute(
                             """
-                            INSERT INTO applications (job_posting_id, stage, applied_at, notes)
-                            VALUES (?, 'applied', date('now'), ?)
+                            INSERT INTO applications (job_posting_id, stage, applied_at, target_salary, notes)
+                            VALUES (?, 'applied', date('now'), ?, ?)
                             """,
-                            (job_posting_id, f"Created from comparison report #{comparison_report_id}"),
+                            (job_posting_id, payload.target_salary, f"Created from comparison report #{comparison_report_id}"),
                         )
                         application_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
                         conn.execute(

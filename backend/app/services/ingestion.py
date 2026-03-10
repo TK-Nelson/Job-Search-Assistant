@@ -47,6 +47,54 @@ JOB_HINTS = (
     "opportunit",
 )
 
+# Domains that are never actual job listings — social media, share widgets, etc.
+_BLOCKED_DOMAINS = {
+    "facebook.com", "www.facebook.com", "m.facebook.com",
+    "twitter.com", "www.twitter.com", "x.com",
+    "linkedin.com", "www.linkedin.com",
+    "instagram.com", "www.instagram.com",
+    "youtube.com", "www.youtube.com",
+    "tiktok.com", "www.tiktok.com",
+    "pinterest.com", "www.pinterest.com",
+    "reddit.com", "www.reddit.com",
+    "glassdoor.com", "www.glassdoor.com",
+    "indeed.com", "www.indeed.com",
+    "maps.google.com", "play.google.com", "apps.apple.com",
+}
+
+# URL path fragments that indicate non-job pages (share dialogs, auth, etc.)
+_BLOCKED_PATH_PATTERNS = (
+    "/sharer", "/share", "/intent/", "/signOn", "/signin", "/login",
+    "/oauth", "/auth/", "/_linkedinApi", "/feed", "/hashtag",
+)
+
+# Patterns that strongly suggest a URL is a single job posting, not a search page
+_SINGLE_POSTING_INDICATORS = (
+    "/job/", "/jobs/", "/jobdetail/", "/JobDetail/",
+    "/InviteToApply", "jobId=", "job_app?token=",
+    "/R0", "/JR-",
+)
+
+
+def _looks_like_single_posting_url(url: str) -> bool:
+    """
+    Heuristic: return True if this URL looks like it points to one specific
+    job listing rather than a careers search / listings page.
+    """
+    if not url or not url.startswith("http"):
+        return False
+    # Workday individual job paths
+    if re.search(r'/job/[^/]+$', url):
+        return True
+    lower = url.lower()
+    for indicator in _SINGLE_POSTING_INDICATORS:
+        if indicator.lower() in lower:
+            return True
+    # LinkedIn/job board tracking params are a strong signal
+    if 'source=linkedin' in lower or 'utm_source=linkedin' in lower:
+        return True
+    return False
+
 
 def _normalize_text(value: str) -> str:
     lowered = value.lower().strip()
@@ -67,7 +115,29 @@ def _fingerprint(company_id: int, canonical_url: str, title: str, location: str)
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
+def _is_blocked_url(url: str) -> bool:
+    """Return True if the URL points to a known non-job domain or path."""
+    parsed = urlparse(url)
+    netloc = parsed.netloc.lower().lstrip("www.") if parsed.netloc else ""
+    full_netloc = parsed.netloc.lower() if parsed.netloc else ""
+    if full_netloc in _BLOCKED_DOMAINS or netloc in _BLOCKED_DOMAINS:
+        return True
+    path_lower = (parsed.path or "").lower()
+    return any(frag in path_lower for frag in _BLOCKED_PATH_PATTERNS)
+
+
+def _is_same_domain(base_url: str, candidate_url: str) -> bool:
+    """Check if candidate is on the same domain (or subdomain) as the base."""
+    base_host = urlparse(base_url).netloc.lower().lstrip("www.")
+    cand_host = urlparse(candidate_url).netloc.lower().lstrip("www.")
+    if not base_host or not cand_host:
+        return False
+    return cand_host == base_host or cand_host.endswith("." + base_host) or base_host.endswith("." + cand_host)
+
+
 def _looks_like_job_link(link_text: str, href: str) -> bool:
+    if _is_blocked_url(href):
+        return False
     value = f"{link_text} {href}".lower()
     return any(hint in value for hint in JOB_HINTS)
 
@@ -140,6 +210,25 @@ def ingest_company_careers_page(
     postings_filtered_out = 0
     errors: list[str] = []
 
+    # Pre-flight: reject single-posting URLs with a clear message
+    if _looks_like_single_posting_url(careers_url):
+        errors.append(
+            f"{company_name}: careers_url appears to be a single job posting, not a careers search page. "
+            f"Please update the company's Careers URL to point to their job listings/search page."
+        )
+        conn.execute(
+            "UPDATE companies SET last_checked_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+            (company_id,),
+        )
+        return postings_new, postings_updated, postings_skipped, postings_filtered_out, errors
+
+    if not careers_url or not careers_url.startswith("http"):
+        errors.append(
+            f"{company_name}: No valid careers URL configured. "
+            f"Please set a careers search page URL for this company."
+        )
+        return postings_new, postings_updated, postings_skipped, postings_filtered_out, errors
+
     try:
         html = _fetch_html(careers_url, timeout_seconds=timeout_seconds, max_retries=max_retries)
     except Exception as exc:
@@ -166,6 +255,11 @@ def ingest_company_careers_page(
             continue
 
         if not _looks_like_job_link(text, absolute_url):
+            postings_skipped += 1
+            continue
+
+        # Only keep links on the same domain as the careers page
+        if not _is_same_domain(careers_url, absolute_url):
             postings_skipped += 1
             continue
 

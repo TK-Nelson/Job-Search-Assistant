@@ -128,6 +128,24 @@ export function deleteJobPosting(postingId) {
   });
 }
 
+export function archiveJobPosting(postingId) {
+  return fetch(`${API_BASE}/job-postings/${postingId}/archive`, {
+    method: "POST",
+  }).then(handleResponse);
+}
+
+export function unarchiveJobPosting(postingId) {
+  return fetch(`${API_BASE}/job-postings/${postingId}/unarchive`, {
+    method: "POST",
+  }).then(handleResponse);
+}
+
+export function runLifecycleCleanup() {
+  return fetch(`${API_BASE}/job-postings/lifecycle-cleanup`, {
+    method: "POST",
+  }).then(handleResponse);
+}
+
 export function getResumes() {
   return fetch(`${API_BASE}/resumes`).then(handleResponse);
 }
@@ -285,11 +303,11 @@ export function getComparisonReport(comparisonReportId) {
   return fetch(`${API_BASE}/comparisons/${comparisonReportId}`).then(handleResponse);
 }
 
-export function setComparisonApplicationDecision(comparisonReportId, applied) {
+export function setComparisonApplicationDecision(comparisonReportId, applied, targetSalary = null) {
   return fetch(`${API_BASE}/comparisons/${comparisonReportId}/application-decision`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ applied }),
+    body: JSON.stringify({ applied, target_salary: targetSalary }),
   }).then(handleResponse);
 }
 
@@ -301,10 +319,47 @@ export function importComparisonChatGptResponse(comparisonReportId, responseText
   }).then(handleResponse);
 }
 
-export function updateComparisonParsedInfo(comparisonReportId, { company_name, title, location }) {
+export function updateComparisonParsedInfo(comparisonReportId, payload) {
   return fetch(`${API_BASE}/comparisons/${comparisonReportId}/parsed-info`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ company_name, title, location }),
+    body: JSON.stringify(payload),
   }).then(handleResponse);
+}
+
+// ── Fetch Routine ────────────────────────────────────────────────
+
+export function getFetchRoutine() {
+  return fetch(`${API_BASE}/fetch-routine`).then(handleResponse);
+}
+
+export function createFetchRoutine(payload) {
+  return fetch(`${API_BASE}/fetch-routine`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then(handleResponse);
+}
+
+export function updateFetchRoutine(payload) {
+  return fetch(`${API_BASE}/fetch-routine`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then(handleResponse);
+}
+
+export function deleteFetchRoutine() {
+  return fetch(`${API_BASE}/fetch-routine`, { method: "DELETE" }).then((r) => {
+    if (!r.ok) return r.json().then((b) => { throw new Error(b?.detail || "Delete failed"); });
+    return null;
+  });
+}
+
+export function getFetchedRoles(limit = 50, offset = 0) {
+  return fetch(`${API_BASE}/fetch-routine/roles?limit=${limit}&offset=${offset}`).then(handleResponse);
+}
+
+export function getFrequencyOptions() {
+  return fetch(`${API_BASE}/fetch-routine/frequency-options`).then(handleResponse);
 }

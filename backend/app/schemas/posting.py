@@ -20,6 +20,12 @@ class JobPostingRead(BaseModel):
     status: str
     match_score: float
     why_matched: str
+    salary_range: str | None = None
+    seniority_level: str | None = None
+    workplace_type: str | None = None
+    years_experience: str | None = None
+    commitment_type: str | None = None
+    archived_at: str | None = None
 
 
 class JobPostingListResponse(BaseModel):
@@ -34,6 +40,12 @@ def map_job_posting_row(row: tuple) -> JobPostingRead:
     analysis_overall_score = row[14] if len(row) > 14 else None
     analysis_evidence_json = row[15] if len(row) > 15 else None
     analysis_matched_keywords_json = row[16] if len(row) > 16 else None
+    db_salary_range = row[17] if len(row) > 17 else None
+    db_seniority_level = row[18] if len(row) > 18 else None
+    db_workplace_type = row[19] if len(row) > 19 else None
+    db_years_experience = row[20] if len(row) > 20 else None
+    db_commitment_type = row[21] if len(row) > 21 else None
+    db_archived_at = row[22] if len(row) > 22 else None
 
     match_score = round(float(analysis_overall_score), 2) if analysis_overall_score is not None else round(parser_confidence * 100, 2)
 
@@ -83,4 +95,10 @@ def map_job_posting_row(row: tuple) -> JobPostingRead:
         status=row[13],
         match_score=match_score,
         why_matched=why,
+        salary_range=db_salary_range,
+        seniority_level=db_seniority_level,
+        workplace_type=db_workplace_type,
+        years_experience=db_years_experience,
+        commitment_type=db_commitment_type,
+        archived_at=db_archived_at,
     )

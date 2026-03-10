@@ -7,6 +7,7 @@ class ApplicationCreate(BaseModel):
     applied_at: str | None = None
     target_salary: str | None = None
     notes: str | None = None
+    resume_version_id: int | None = None
 
 
 class ApplicationUpdate(BaseModel):
@@ -24,6 +25,7 @@ class ApplicationStageUpdate(BaseModel):
 class ApplicationRead(BaseModel):
     id: int
     job_posting_id: int
+    company_id: int
     company_name: str
     posting_title: str
     stage: str
@@ -32,6 +34,10 @@ class ApplicationRead(BaseModel):
     notes: str | None
     created_at: str
     updated_at: str
+    match_score: float | None = None
+    comparison_report_id: int | None = None
+    industry: str | None = None
+    logo_url: str | None = None
 
 
 class ApplicationListResponse(BaseModel):
@@ -57,14 +63,19 @@ def map_application_row(row: tuple) -> ApplicationRead:
     return ApplicationRead(
         id=row[0],
         job_posting_id=row[1],
-        company_name=row[2],
-        posting_title=row[3],
-        stage=row[4],
-        applied_at=row[5],
-        target_salary=row[6],
-        notes=row[7],
-        created_at=row[8],
-        updated_at=row[9],
+        company_id=row[2],
+        company_name=row[3],
+        posting_title=row[4],
+        stage=row[5],
+        applied_at=row[6],
+        target_salary=row[7],
+        notes=row[8],
+        created_at=row[9],
+        updated_at=row[10],
+        match_score=round(float(row[11]), 2) if len(row) > 11 and row[11] is not None else None,
+        comparison_report_id=int(row[12]) if len(row) > 12 and row[12] is not None else None,
+        industry=row[13] if len(row) > 13 else None,
+        logo_url=row[14] if len(row) > 14 else None,
     )
 
 

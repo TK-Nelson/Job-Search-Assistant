@@ -13,8 +13,34 @@ from app.schemas.application import (
     map_application_row,
     map_stage_history_row,
 )
+from app.services.analysis import run_analysis
+from app.services.analysis_llm import create_placeholder_analysis_run
 
 router = APIRouter()
+
+_ENRICHED_SELECT = """
+    SELECT a.id, a.job_posting_id, jp.company_id, c.name, jp.title, a.stage, a.applied_at,
+           a.target_salary, a.notes, a.created_at, a.updated_at,
+           ar.overall_score,
+           cr.id AS comparison_report_id,
+           c.industry,
+           c.logo_url
+    FROM applications a
+    JOIN job_postings jp ON jp.id = a.job_posting_id
+    JOIN companies c ON c.id = jp.company_id
+    LEFT JOIN comparison_reports cr
+        ON cr.id = (
+            SELECT cr2.id FROM comparison_reports cr2
+            WHERE cr2.linked_application_id = a.id
+            ORDER BY cr2.id DESC LIMIT 1
+        )
+    LEFT JOIN analysis_runs ar
+        ON ar.id = (
+            SELECT ar2.id FROM analysis_runs ar2
+            WHERE ar2.job_posting_id = jp.id
+            ORDER BY ar2.id DESC LIMIT 1
+        )
+"""
 
 
 VALID_STAGES = {
@@ -77,17 +103,31 @@ def create_application(payload: ApplicationCreate) -> ApplicationRead:
                 """,
                 (application_id, payload.stage),
             )
+
+            # --- Auto-compare: run analysis & create comparison_report when resume provided ---
+            comparison_report_id = None
+            if payload.resume_version_id is not None:
+                try:
+                    analysis = run_analysis(payload.resume_version_id, payload.job_posting_id)
+                    conn.execute(
+                        """
+                        INSERT INTO comparison_reports (
+                          job_posting_id, resume_version_id, analysis_run_id,
+                          source_company_input, source_url_input,
+                          evaluation_source, chatgpt_response_json,
+                          applied_decision, linked_application_id
+                        ) VALUES (?, ?, ?, NULL, NULL, 'local_engine', NULL, 'yes', ?)
+                        """,
+                        (payload.job_posting_id, payload.resume_version_id, analysis.analysis_run_id, application_id),
+                    )
+                    comparison_report_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                except Exception:
+                    pass  # non-fatal: application still created even if analysis fails
+
             conn.commit()
 
             row = conn.execute(
-                """
-                SELECT a.id, a.job_posting_id, c.name, jp.title, a.stage, a.applied_at,
-                       a.target_salary, a.notes, a.created_at, a.updated_at
-                FROM applications a
-                JOIN job_postings jp ON jp.id = a.job_posting_id
-                JOIN companies c ON c.id = jp.company_id
-                WHERE a.id = ?
-                """,
+                _ENRICHED_SELECT + " WHERE a.id = ?",
                 (application_id,),
             ).fetchone()
     except sqlite3.OperationalError as exc:
@@ -104,14 +144,7 @@ def list_applications(
     if stage:
         _ensure_stage(stage)
 
-    query = """
-        SELECT a.id, a.job_posting_id, c.name, jp.title, a.stage, a.applied_at,
-               a.target_salary, a.notes, a.created_at, a.updated_at
-        FROM applications a
-        JOIN job_postings jp ON jp.id = a.job_posting_id
-        JOIN companies c ON c.id = jp.company_id
-        WHERE 1=1
-    """
+    query = _ENRICHED_SELECT + " WHERE 1=1\n    "
     params: list = []
 
     if stage:
@@ -169,14 +202,7 @@ def update_application(application_id: int, payload: ApplicationUpdate) -> Appli
             conn.commit()
 
             row = conn.execute(
-                """
-                SELECT a.id, a.job_posting_id, c.name, jp.title, a.stage, a.applied_at,
-                       a.target_salary, a.notes, a.created_at, a.updated_at
-                FROM applications a
-                JOIN job_postings jp ON jp.id = a.job_posting_id
-                JOIN companies c ON c.id = jp.company_id
-                WHERE a.id = ?
-                """,
+                _ENRICHED_SELECT + " WHERE a.id = ?",
                 (application_id,),
             ).fetchone()
     except sqlite3.OperationalError as exc:
@@ -214,14 +240,7 @@ def update_application_stage(application_id: int, payload: ApplicationStageUpdat
             conn.commit()
 
             row = conn.execute(
-                """
-                SELECT a.id, a.job_posting_id, c.name, jp.title, a.stage, a.applied_at,
-                       a.target_salary, a.notes, a.created_at, a.updated_at
-                FROM applications a
-                JOIN job_postings jp ON jp.id = a.job_posting_id
-                JOIN companies c ON c.id = jp.company_id
-                WHERE a.id = ?
-                """,
+                _ENRICHED_SELECT + " WHERE a.id = ?",
                 (application_id,),
             ).fetchone()
     except sqlite3.OperationalError as exc:

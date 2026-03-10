@@ -12,6 +12,7 @@ import {
   Image,
   Menu,
   Modal,
+  MultiSelect,
   Paper,
   Select,
   SimpleGrid,
@@ -36,10 +37,39 @@ import {
   updateCompany,
 } from "../api";
 
+const INDUSTRY_OPTIONS = [
+  "Aerospace & Defense",
+  "Automotive",
+  "Banking & Financial Services",
+  "Consulting",
+  "Consumer Goods",
+  "E-Commerce",
+  "Education",
+  "Energy & Utilities",
+  "Entertainment & Media",
+  "Gaming",
+  "Government",
+  "Healthcare",
+  "Hospitality & Travel",
+  "Insurance",
+  "Legal",
+  "Logistics & Supply Chain",
+  "Manufacturing",
+  "Nonprofit",
+  "Pharmaceuticals",
+  "Real Estate",
+  "Retail",
+  "SaaS / Cloud",
+  "Streaming / Digital Media",
+  "Technology",
+  "Telecommunications",
+  "Transportation",
+];
+
 const emptyForm = {
   name: "",
   careers_url: "",
-  industry: "",
+  industry: [],
   notes: "",
   followed: true,
 };
@@ -55,6 +85,33 @@ function initials(name) {
 function isRealUrl(url) {
   if (!url) return false;
   return /^https?:\/\//i.test(url) && !url.includes("manual.local/");
+}
+
+/** Parse a comma-separated industry string into an array of trimmed values. */
+function parseIndustry(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/** Serialize an array of industries to a comma-separated string (or null). */
+function serializeIndustry(arr) {
+  if (!arr || arr.length === 0) return null;
+  return arr.join(", ");
+}
+
+/** Format a UTC or plain date string to "MMM DD, YYYY H:MM AM/PM" */
+function formatDate(value) {
+  if (!value) return "\u2014";
+  const d = value.includes("T") || /^\d{4}-\d{2}-\d{2} /.test(value)
+    ? new Date(value + (value.endsWith("Z") ? "" : "Z"))
+    : new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const hours = d.getHours();
+  const ampm = hours >= 12 ? "PM" : "AM";
+  const h12 = hours % 12 || 12;
+  return `${months[d.getMonth()]} ${String(d.getDate()).padStart(2,"0")}, ${d.getFullYear()} ${h12}:${String(d.getMinutes()).padStart(2,"0")} ${ampm}`;
 }
 
 export default function CompaniesPage() {
@@ -78,6 +135,11 @@ export default function CompaniesPage() {
   const [filterFollowed, setFilterFollowed] = useState(false);
   const [filterSearch, setFilterSearch] = useState("");
 
+  // Follow-URL prompt modal state
+  const [followUrlModalOpen, setFollowUrlModalOpen] = useState(false);
+  const [followUrlTarget, setFollowUrlTarget] = useState(null);   // company object
+  const [followUrlValue, setFollowUrlValue] = useState("");
+
   function showAction(text, tone = "success") {
     setActionMsg({ text, tone });
   }
@@ -85,7 +147,10 @@ export default function CompaniesPage() {
   async function loadCompanies() {
     setIsLoading(true);
     try {
-      const [companiesResult, applicationsResult] = await Promise.allSettled([getCompanies(), getApplications()]);
+      const [companiesResult, applicationsResult] = await Promise.allSettled([
+        getCompanies(),
+        getApplications(),
+      ]);
 
       const companyItems = companiesResult.status === "fulfilled" ? companiesResult.value.items || [] : [];
       const applicationItems = applicationsResult.status === "fulfilled" ? applicationsResult.value.items || [] : [];
@@ -193,7 +258,7 @@ export default function CompaniesPage() {
     setModalForm({
       name: company.name,
       careers_url: company.careers_url || "",
-      industry: company.industry || "",
+      industry: parseIndustry(company.industry),
       notes: company.notes || "",
       followed: Boolean(company.followed),
     });
@@ -212,7 +277,7 @@ export default function CompaniesPage() {
       const payload = {
         ...modalForm,
         careers_url: modalForm.careers_url || null,
-        industry: modalForm.industry || null,
+        industry: serializeIndustry(modalForm.industry),
         notes: modalForm.notes || null,
       };
       if (editingId) {
@@ -250,6 +315,15 @@ export default function CompaniesPage() {
 
   async function onToggleFollowed(company) {
     if (typeof company.id !== "number") return;
+
+    // When following a company that has no careers URL, prompt for one first
+    if (!company.followed && !isRealUrl(company.careers_url)) {
+      setFollowUrlTarget(company);
+      setFollowUrlValue("");
+      setFollowUrlModalOpen(true);
+      return;
+    }
+
     setFollowingId(company.id);
     try {
       await updateCompany(company.id, {
@@ -266,6 +340,47 @@ export default function CompaniesPage() {
     } finally {
       setFollowingId(null);
     }
+  }
+
+  async function onConfirmFollowWithUrl() {
+    if (!followUrlTarget) return;
+    setFollowingId(followUrlTarget.id);
+    setFollowUrlModalOpen(false);
+    try {
+      await updateCompany(followUrlTarget.id, {
+        name: followUrlTarget.name,
+        careers_url: followUrlValue.trim() || null,
+        industry: followUrlTarget.industry || null,
+        notes: followUrlTarget.notes || null,
+        followed: true,
+      });
+      showAction("Now following — careers URL updated.");
+      await loadCompanies();
+    } catch (err) {
+      showAction(`Follow failed: ${err.message}`, "error");
+    } finally {
+      setFollowingId(null);
+      setFollowUrlTarget(null);
+    }
+  }
+
+  function onSkipFollowUrl() {
+    if (!followUrlTarget) return;
+    // Follow without URL — just toggle
+    const company = followUrlTarget;
+    setFollowUrlModalOpen(false);
+    setFollowUrlTarget(null);
+    setFollowingId(company.id);
+    updateCompany(company.id, {
+      name: company.name,
+      careers_url: company.careers_url || null,
+      industry: company.industry || null,
+      notes: company.notes || null,
+      followed: true,
+    })
+      .then(() => { showAction("Now following."); return loadCompanies(); })
+      .catch((err) => showAction(`Follow failed: ${err.message}`, "error"))
+      .finally(() => setFollowingId(null));
   }
 
   async function onRefreshLogo(company) {
@@ -437,8 +552,8 @@ export default function CompaniesPage() {
                         ) : (
                           <Avatar radius={8} size="md" color="blue">{initials(company.name)}</Avatar>
                         )}
-                        {isRealUrl(company.careers_url) ? (
-                          <Anchor href={company.careers_url} target="_blank" rel="noreferrer">
+                        {typeof company.id === "number" ? (
+                          <Anchor component={Link} to={`/companies/${company.id}`}>
                             {company.name}
                           </Anchor>
                         ) : (
@@ -456,7 +571,7 @@ export default function CompaniesPage() {
                         <Text size="sm" c="dimmed">0</Text>
                       )}
                     </Table.Td>
-                    <Table.Td>{company.last_checked_at || "-"}</Table.Td>
+                    <Table.Td>{formatDate(company.last_checked_at)}</Table.Td>
                     <Table.Td>
                       <Menu shadow="md" width={180} position="bottom-end" withArrow>
                         <Menu.Target>
@@ -527,11 +642,15 @@ export default function CompaniesPage() {
             onChange={(e) => setModalForm((f) => ({ ...f, careers_url: e.target.value }))}
             disabled={isSaving}
           />
-          <TextInput
+          <MultiSelect
             label="Industry"
-            placeholder={isManualPlaceholder ? "Add industry for this manually-created entry" : ""}
+            placeholder={isManualPlaceholder ? "Add industry for this manually-created entry" : "Select or type industries"}
+            data={INDUSTRY_OPTIONS}
             value={modalForm.industry}
-            onChange={(e) => setModalForm((f) => ({ ...f, industry: e.target.value }))}
+            onChange={(value) => setModalForm((f) => ({ ...f, industry: value }))}
+            searchable
+            creatable
+            getCreateLabel={(query) => `+ Add "${query}"`}
             disabled={isSaving}
           />
           <Textarea
@@ -555,6 +674,33 @@ export default function CompaniesPage() {
           <Group justify="flex-end" mt="sm">
             <Button variant="default" onClick={closeModal} disabled={isSaving}>Cancel</Button>
             <Button onClick={onSaveModal} loading={isSaving}>Save</Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      {/* Follow-URL prompt modal */}
+      <Modal
+        opened={followUrlModalOpen}
+        onClose={() => { setFollowUrlModalOpen(false); setFollowUrlTarget(null); }}
+        title="Add Careers URL"
+        centered
+        size="md"
+      >
+        <Stack>
+          <Text size="sm">
+            <b>{followUrlTarget?.name}</b> doesn&apos;t have a careers URL yet.
+            Adding one lets the fetch routine discover open roles automatically.
+          </Text>
+          <TextInput
+            label="Careers / Job board URL"
+            type="url"
+            placeholder="https://company.com/careers"
+            value={followUrlValue}
+            onChange={(e) => setFollowUrlValue(e.target.value)}
+          />
+          <Group justify="flex-end" mt="sm">
+            <Button variant="default" onClick={onSkipFollowUrl}>Skip</Button>
+            <Button onClick={onConfirmFollowWithUrl}>Follow</Button>
           </Group>
         </Stack>
       </Modal>

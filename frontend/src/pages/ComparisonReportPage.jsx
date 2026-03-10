@@ -634,7 +634,7 @@ export default function ComparisonReportPage() {
   const [showSoftStrongest, setShowSoftStrongest] = useState(false);
   const [isEditingParsedInfo, setIsEditingParsedInfo] = useState(false);
   const [isSavingParsedInfo, setIsSavingParsedInfo] = useState(false);
-  const [parsedInfoForm, setParsedInfoForm] = useState({ company_name: "", title: "", location: "" });
+  const [parsedInfoForm, setParsedInfoForm] = useState({ company_name: "", title: "", location: "", salary_range: "", seniority_level: "", workplace_type: "", years_experience: "", commitment_type: "" });
 
   async function loadReport() {
     setIsLoading(true);
@@ -683,7 +683,7 @@ export default function ComparisonReportPage() {
     setIsSavingDecision(true);
     setStatusText(applied ? "Saving application decision..." : "Recording decision...");
     try {
-      const result = await setComparisonApplicationDecision(comparisonReportId, applied);
+      const result = await setComparisonApplicationDecision(comparisonReportId, applied, applied ? roleContext.compensation : null);
       setStatusText(applied ? "Application decision saved. Role linked to applications log." : "Marked as not applied.");
       setIsEditingDecision(false);
       await loadReport();
@@ -721,7 +721,7 @@ export default function ComparisonReportPage() {
         evaluation_mode: report.evaluation_source === "local_engine" ? "local_engine" : "chatgpt_api",
       });
       setStatusText("Evaluation refreshed.");
-      navigate(`/postings/reports/${refreshed.comparison_report_id}`);
+      navigate(`/applications/application/${refreshed.comparison_report_id}`);
     } catch (err) {
       setStatusText(`Failed to refresh evaluation: ${err.message}`);
     } finally {
@@ -776,6 +776,11 @@ export default function ComparisonReportPage() {
       company_name: report?.company_name || "",
       title: report?.title || "",
       location: posting?.location || "",
+      salary_range: posting?.salary_range || roleContext.compensation || "",
+      seniority_level: posting?.seniority_level || roleContext.level || "",
+      workplace_type: posting?.workplace_type || roleContext.workplace || "",
+      years_experience: posting?.years_experience || roleContext.yearsExperience || "",
+      commitment_type: posting?.commitment_type || roleContext.roleType || "",
     });
     setIsEditingParsedInfo(true);
     setIsEditingResponse(false);
@@ -853,14 +858,14 @@ export default function ComparisonReportPage() {
       industry: extractIndustry(description),
       team: extractTeamGroup(description, report?.title),
       locations: extractLocations(description, posting?.location),
-      workplace: extractWorkplace(description),
-      compensation: extractCompensation(description),
-      roleType: extractRoleType(description),
-      level: level.value,
-      levelSource: level.source,
-      yearsExperience: extractYearsExperience(description),
+      workplace: posting?.workplace_type || extractWorkplace(description),
+      compensation: posting?.salary_range || extractCompensation(description),
+      roleType: posting?.commitment_type || extractRoleType(description),
+      level: posting?.seniority_level || level.value,
+      levelSource: posting?.seniority_level ? "parsed" : level.source,
+      yearsExperience: posting?.years_experience || extractYearsExperience(description),
     };
-  }, [posting?.description_text, posting?.location, report?.title]);
+  }, [posting?.description_text, posting?.location, posting?.salary_range, posting?.seniority_level, posting?.workplace_type, posting?.years_experience, posting?.commitment_type, report?.title]);
 
   const hardMatched = report?.analysis?.matched_keywords?.hard || [];
   const hardMissing = report?.analysis?.missing_keywords?.hard || [];
@@ -989,6 +994,7 @@ export default function ComparisonReportPage() {
       <Stack gap="md">
         <Breadcrumbs>
           <Anchor component={Link} to="/dashboard">Dashboard</Anchor>
+          <Anchor component={Link} to="/applications">Applications</Anchor>
           <Text size="sm">Comparison Report</Text>
         </Breadcrumbs>
 
@@ -1246,17 +1252,44 @@ export default function ComparisonReportPage() {
                       <TextInput
                         label="Company Name"
                         value={parsedInfoForm.company_name}
-                        onChange={(event) => setParsedInfoForm((f) => ({ ...f, company_name: event.currentTarget.value }))}
+                        onChange={(e) => { const v = e.currentTarget.value; setParsedInfoForm((f) => ({ ...f, company_name: v })); }}
                       />
                       <TextInput
                         label="Title"
                         value={parsedInfoForm.title}
-                        onChange={(event) => setParsedInfoForm((f) => ({ ...f, title: event.currentTarget.value }))}
+                        onChange={(e) => { const v = e.currentTarget.value; setParsedInfoForm((f) => ({ ...f, title: v })); }}
                       />
                       <TextInput
                         label="Location"
                         value={parsedInfoForm.location}
-                        onChange={(event) => setParsedInfoForm((f) => ({ ...f, location: event.currentTarget.value }))}
+                        onChange={(e) => { const v = e.currentTarget.value; setParsedInfoForm((f) => ({ ...f, location: v })); }}
+                      />
+                      <TextInput
+                        label="Salary Range"
+                        value={parsedInfoForm.salary_range}
+                        onChange={(e) => { const v = e.currentTarget.value; setParsedInfoForm((f) => ({ ...f, salary_range: v })); }}
+                      />
+                      <TextInput
+                        label="Seniority Level"
+                        value={parsedInfoForm.seniority_level}
+                        onChange={(e) => { const v = e.currentTarget.value; setParsedInfoForm((f) => ({ ...f, seniority_level: v })); }}
+                      />
+                      <TextInput
+                        label="Workplace Type"
+                        placeholder="e.g. Remote, Hybrid, On-site"
+                        value={parsedInfoForm.workplace_type}
+                        onChange={(e) => { const v = e.currentTarget.value; setParsedInfoForm((f) => ({ ...f, workplace_type: v })); }}
+                      />
+                      <TextInput
+                        label="Years Experience"
+                        value={parsedInfoForm.years_experience}
+                        onChange={(e) => { const v = e.currentTarget.value; setParsedInfoForm((f) => ({ ...f, years_experience: v })); }}
+                      />
+                      <TextInput
+                        label="Time Commitment"
+                        placeholder="e.g. Full-time, Part-time, Contract"
+                        value={parsedInfoForm.commitment_type}
+                        onChange={(e) => { const v = e.currentTarget.value; setParsedInfoForm((f) => ({ ...f, commitment_type: v })); }}
                       />
                       <Group justify="flex-end">
                         <Button variant="default" onClick={() => setIsEditingParsedInfo(false)}>Cancel</Button>
