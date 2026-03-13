@@ -236,9 +236,16 @@ def get_fetched_roles(
             SELECT jp.id, jp.company_id, c.name, c.logo_url, jp.title, jp.location,
                    jp.posted_date, jp.canonical_url, jp.first_seen_at, jp.last_seen_at,
                    jp.status, jp.salary_range, jp.seniority_level, jp.workplace_type,
-                   jp.commitment_type, jp.archived_at
+                   jp.commitment_type, jp.archived_at,
+                   ar.overall_score, jp.description_text
             FROM job_postings jp
             JOIN companies c ON c.id = jp.company_id
+            LEFT JOIN analysis_runs ar
+                ON ar.id = (
+                    SELECT ar2.id FROM analysis_runs ar2
+                    WHERE ar2.job_posting_id = jp.id
+                    ORDER BY ar2.id DESC LIMIT 1
+                )
             WHERE {where_sql}
             ORDER BY jp.first_seen_at DESC
             LIMIT ? OFFSET ?
@@ -264,6 +271,8 @@ def get_fetched_roles(
             workplace_type=r[13],
             commitment_type=r[14],
             archived_at=r[15] if len(r) > 15 else None,
+            match_score=round(float(r[16]), 1) if len(r) > 16 and r[16] is not None else None,
+            description_text=r[17] if len(r) > 17 else None,
         )
         for r in rows
     ]

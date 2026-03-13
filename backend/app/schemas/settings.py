@@ -33,13 +33,15 @@ class FetchConfig(BaseModel):
 
 
 class ScoringWeights(BaseModel):
+    """Legacy — retained for backward compatibility with existing settings files."""
     ats_searchability: float = 0.35
     hard_skills: float = 0.45
     soft_skills: float = 0.20
 
 
 class ScoringConfig(BaseModel):
-    weights: ScoringWeights
+    """Legacy — retained for backward compatibility with existing settings files."""
+    weights: ScoringWeights = Field(default_factory=ScoringWeights)
     minimum_confidence_for_strong_recommendation: float = 0.7
 
 
@@ -55,7 +57,7 @@ class AppConfig(BaseModel):
     storage: StorageConfig
     resume: ResumeConfig
     fetch: FetchConfig
-    scoring: ScoringConfig
+    scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     retention: RetentionConfig
 
     @model_validator(mode="after")
@@ -76,11 +78,6 @@ class AppConfig(BaseModel):
         self.fetch.role_filters.description_contains = [
             item.strip() for item in self.fetch.role_filters.description_contains if item and item.strip()
         ]
-
-        weights = self.scoring.weights
-        total = weights.ats_searchability + weights.hard_skills + weights.soft_skills
-        if round(total, 6) != 1.0:
-            raise ValueError("scoring weights must sum to 1.0")
 
         return self
 

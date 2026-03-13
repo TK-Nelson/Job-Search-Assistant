@@ -11,6 +11,11 @@ LOGO_DEV_TOKEN = os.environ.get("LOGO_DEV_TOKEN", "")
 
 router = APIRouter()
 
+_COMPANY_COLS = (
+    "id, name, careers_url, industry, logo_url, followed, notes, "
+    "last_checked_at, created_at, updated_at, portal_type, search_url"
+)
+
 
 def _validate_url(url: str) -> None:
     parsed = urlparse(url)
@@ -31,22 +36,27 @@ def create_company(payload: CompanyCreate) -> CompanyRead:
     if effective_url:
         _validate_url(effective_url)
 
+    # Auto-detect portal_type from careers_url if not provided
+    portal_type = payload.portal_type
+    search_url = (payload.search_url or "").strip() or None
+    if effective_url and not portal_type:
+        from app.services.adapters.registry import detect_portal_type, derive_search_url
+        portal_type = detect_portal_type(effective_url)
+        if portal_type and not search_url:
+            search_url = derive_search_url(portal_type, effective_url)
+
     try:
         with get_connection() as conn:
             conn.execute(
                 """
-                INSERT INTO companies (name, careers_url, industry, logo_url, followed, notes)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO companies (name, careers_url, industry, logo_url, followed, notes, portal_type, search_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (payload.name.strip(), effective_url, payload.industry, payload.logo_url, int(payload.followed), payload.notes),
+                (payload.name.strip(), effective_url, payload.industry, payload.logo_url, int(payload.followed), payload.notes, portal_type, search_url),
             )
             conn.commit()
             row = conn.execute(
-                """
-                SELECT id, name, careers_url, industry, logo_url, followed, notes, last_checked_at, created_at, updated_at
-                FROM companies
-                WHERE id = last_insert_rowid()
-                """
+                f"SELECT {_COMPANY_COLS} FROM companies WHERE id = last_insert_rowid()"
             ).fetchone()
     except Exception as exc:
         if "UNIQUE constraint failed" in str(exc):
@@ -61,8 +71,8 @@ def create_company(payload: CompanyCreate) -> CompanyRead:
 
 @router.get("/companies", response_model=CompanyListResponse)
 def list_companies(followed: bool | None = Query(default=None)) -> CompanyListResponse:
-    query = """
-    SELECT id, name, careers_url, industry, logo_url, followed, notes, last_checked_at, created_at, updated_at
+    query = f"""
+    SELECT {_COMPANY_COLS}
     FROM companies
     """
     params: tuple = ()
@@ -88,7 +98,7 @@ def update_company(company_id: int, payload: CompanyUpdate) -> CompanyRead:
 
     with get_connection() as conn:
         current = conn.execute(
-            "SELECT id, name, careers_url, industry, logo_url, followed, notes FROM companies WHERE id = ?",
+            f"SELECT {_COMPANY_COLS} FROM companies WHERE id = ?",
             (company_id,),
         ).fetchone()
         if not current:
@@ -118,11 +128,33 @@ def update_company(company_id: int, payload: CompanyUpdate) -> CompanyRead:
         if "notes" in sent:
             set_clauses.append("notes = ?")
             params.append(payload.notes)
+        if "portal_type" in sent:
+            set_clauses.append("portal_type = ?")
+            params.append(payload.portal_type)
+        if "search_url" in sent:
+            new_search_url = (payload.search_url or "").strip() or None
+            set_clauses.append("search_url = ?")
+            params.append(new_search_url)
+
+            # Auto-detect portal_type from search_url (or careers_url) if not explicitly provided
+            if "portal_type" not in sent and new_search_url:
+                from app.services.adapters.registry import detect_portal_type
+                detected = detect_portal_type(new_search_url)
+                if not detected and effective_url:
+                    detected = detect_portal_type(effective_url)
+                if not detected:
+                    # Try existing careers_url from DB
+                    existing_careers = current[2]  # careers_url column
+                    if existing_careers:
+                        detected = detect_portal_type(existing_careers)
+                if detected:
+                    set_clauses.append("portal_type = ?")
+                    params.append(detected)
 
         if not set_clauses:
             # Nothing to change – just return current state
             row = conn.execute(
-                "SELECT id, name, careers_url, industry, logo_url, followed, notes, last_checked_at, created_at, updated_at FROM companies WHERE id = ?",
+                f"SELECT {_COMPANY_COLS} FROM companies WHERE id = ?",
                 (company_id,),
             ).fetchone()
             return map_company_row(row)
@@ -145,11 +177,7 @@ def update_company(company_id: int, payload: CompanyUpdate) -> CompanyRead:
             raise
 
         row = conn.execute(
-            """
-            SELECT id, name, careers_url, industry, logo_url, followed, notes, last_checked_at, created_at, updated_at
-            FROM companies
-            WHERE id = ?
-            """,
+            f"SELECT {_COMPANY_COLS} FROM companies WHERE id = ?",
             (company_id,),
         ).fetchone()
 
@@ -172,7 +200,7 @@ def delete_company(company_id: int) -> dict[str, str]:
 def refresh_company_logo(company_id: int) -> CompanyRead:
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT id, name, careers_url, industry, logo_url, followed, notes, last_checked_at, created_at, updated_at FROM companies WHERE id = ?",
+            f"SELECT {_COMPANY_COLS} FROM companies WHERE id = ?",
             (company_id,),
         ).fetchone()
         if not row:
@@ -186,7 +214,7 @@ def refresh_company_logo(company_id: int) -> CompanyRead:
         )
         conn.commit()
         updated_row = conn.execute(
-            "SELECT id, name, careers_url, industry, logo_url, followed, notes, last_checked_at, created_at, updated_at FROM companies WHERE id = ?",
+            f"SELECT {_COMPANY_COLS} FROM companies WHERE id = ?",
             (company_id,),
         ).fetchone()
     return map_company_row(updated_row)
@@ -196,7 +224,7 @@ def refresh_company_logo(company_id: int) -> CompanyRead:
 def refresh_all_logos() -> dict:
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT id, name, careers_url, industry, logo_url, followed, notes, last_checked_at, created_at, updated_at FROM companies"
+            f"SELECT {_COMPANY_COLS} FROM companies"
         ).fetchall()
         count = 0
         for row in rows:

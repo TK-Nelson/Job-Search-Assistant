@@ -4,9 +4,26 @@ const API_BASE_FALLBACK = "http://localhost:8001/api/v1";
 async function handleResponse(response) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(body?.detail?.message || body?.detail?.code || "Request failed");
+    const detail = body?.detail;
+    let msg = "Request failed";
+    if (typeof detail === "string") msg = detail;
+    else if (detail?.message) msg = detail.message;
+    else if (detail?.code) msg = detail.code;
+    else if (Array.isArray(detail)) msg = detail.map((d) => d.msg || d.message || JSON.stringify(d)).join("; ");
+    throw new Error(`${msg} (HTTP ${response.status})`);
   }
   return body;
+}
+
+export async function checkBackendHealth() {
+  try {
+    const res = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) return { ok: false };
+    const data = await res.json();
+    return { ok: true, ...data };
+  } catch {
+    return { ok: false };
+  }
 }
 
 export function getSettings() {
@@ -84,9 +101,23 @@ export function refreshAllCompanyLogos() {
   }).then(handleResponse);
 }
 
-export function runFetchNow() {
+export function runFetchNow(exemptCompanyIds = []) {
   return fetch(`${API_BASE}/fetch/run-now`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ exempt_company_ids: exemptCompanyIds }),
+  }).then(handleResponse);
+}
+
+export function getFetchPreflight() {
+  return fetch(`${API_BASE}/fetch/preflight`).then(handleResponse);
+}
+
+export function saveFetchSearchUrls(updates) {
+  return fetch(`${API_BASE}/fetch/save-search-urls`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ updates }),
   }).then(handleResponse);
 }
 
@@ -112,6 +143,14 @@ export function getJobPosting(postingId) {
   return fetch(`${API_BASE}/job-postings/${postingId}`).then(handleResponse);
 }
 
+export function createJobPosting(payload) {
+  return fetch(`${API_BASE}/job-postings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then(handleResponse);
+}
+
 export function deleteJobPosting(postingId) {
   const path = `/job-postings/${postingId}`;
   return fetch(`${API_BASE}${path}`, {
@@ -134,6 +173,14 @@ export function archiveJobPosting(postingId) {
   }).then(handleResponse);
 }
 
+export function updateJobPosting(postingId, updates) {
+  return fetch(`${API_BASE}/job-postings/${postingId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  }).then(handleResponse);
+}
+
 export function unarchiveJobPosting(postingId) {
   return fetch(`${API_BASE}/job-postings/${postingId}/unarchive`, {
     method: "POST",
@@ -142,6 +189,20 @@ export function unarchiveJobPosting(postingId) {
 
 export function runLifecycleCleanup() {
   return fetch(`${API_BASE}/job-postings/lifecycle-cleanup`, {
+    method: "POST",
+  }).then(handleResponse);
+}
+
+export function getLifecycleWarnings() {
+  return fetch(`${API_BASE}/job-postings/lifecycle-warnings`).then(handleResponse);
+}
+
+export function getApplicationLifecycleWarnings() {
+  return fetch(`${API_BASE}/applications/lifecycle-warnings`).then(handleResponse);
+}
+
+export function testFetchCompany(companyId) {
+  return fetch(`${API_BASE}/fetch/test-company/${companyId}`, {
     method: "POST",
   }).then(handleResponse);
 }
@@ -362,4 +423,49 @@ export function getFetchedRoles(limit = 50, offset = 0) {
 
 export function getFrequencyOptions() {
   return fetch(`${API_BASE}/fetch-routine/frequency-options`).then(handleResponse);
+}
+
+// ── Notifications ────────────────────────────────────────────────
+
+export function getNotifications(limit = 100, unreadOnly = false) {
+  const params = new URLSearchParams({ limit, unread_only: unreadOnly });
+  return fetch(`${API_BASE}/notifications?${params}`).then(handleResponse);
+}
+
+export function markNotificationRead(notificationId) {
+  return fetch(`${API_BASE}/notifications/${notificationId}/read`, { method: "POST" }).then(handleResponse);
+}
+
+export function markAllNotificationsRead() {
+  return fetch(`${API_BASE}/notifications/read-all`, { method: "POST" }).then(handleResponse);
+}
+
+export function deleteNotification(notificationId) {
+  return fetch(`${API_BASE}/notifications/${notificationId}`, { method: "DELETE" }).then(handleResponse);
+}
+
+// ── Gemini Settings ──────────────────────────────────────────────
+
+export function getGeminiKeyStatus() {
+  return fetch(`${API_BASE}/settings/gemini-key`).then(handleResponse);
+}
+
+export function setGeminiKey(apiKey) {
+  return fetch(`${API_BASE}/settings/gemini-key`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ api_key: apiKey }),
+  }).then(handleResponse);
+}
+
+export function getGeminiUsage() {
+  return fetch(`${API_BASE}/settings/gemini-usage`).then(handleResponse);
+}
+
+// ── Re-evaluate with Gemini ──────────────────────────────────────
+
+export function reEvaluateWithGemini(comparisonReportId) {
+  return fetch(`${API_BASE}/comparisons/${comparisonReportId}/re-evaluate`, {
+    method: "POST",
+  }).then(handleResponse);
 }

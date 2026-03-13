@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS job_postings (
   workplace_type TEXT,
   years_experience TEXT,
   commitment_type TEXT,
+  team TEXT,
   FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE,
   UNIQUE(fingerprint)
 );
@@ -47,6 +48,7 @@ CREATE TABLE IF NOT EXISTS applications (
   applied_at TEXT,
   target_salary TEXT,
   notes TEXT,
+  archived_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY(job_posting_id) REFERENCES job_postings(id) ON DELETE CASCADE
@@ -147,8 +149,9 @@ CREATE TABLE IF NOT EXISTS comparison_reports (
   analysis_run_id INTEGER NOT NULL,
   source_company_input TEXT,
   source_url_input TEXT,
-  evaluation_source TEXT NOT NULL DEFAULT 'local_engine' CHECK (evaluation_source IN ('chatgpt_api','local_engine')),
+  evaluation_source TEXT NOT NULL DEFAULT 'gemini_api' CHECK (evaluation_source IN ('chatgpt_api','local_engine','gemini_api')),
   chatgpt_response_json TEXT,
+  llm_response_json TEXT,
   applied_decision TEXT NOT NULL DEFAULT 'unknown' CHECK (applied_decision IN ('unknown','yes','no')),
   linked_application_id INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -175,3 +178,13 @@ CREATE INDEX IF NOT EXISTS idx_analysis_runs_resume_job ON analysis_runs(resume_
 CREATE INDEX IF NOT EXISTS idx_fetch_runs_started ON fetch_runs(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_events_corr ON audit_events(correlation_id);
 CREATE INDEX IF NOT EXISTS idx_comparison_reports_created ON comparison_reports(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  level TEXT NOT NULL DEFAULT 'info' CHECK (level IN ('info','warning','error')),
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  is_read INTEGER NOT NULL DEFAULT 0 CHECK (is_read IN (0,1)),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(is_read, created_at DESC);

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
+  ActionIcon,
   Anchor,
   Alert,
   Avatar,
@@ -12,6 +13,7 @@ import {
   Group,
   Loader,
   Menu,
+  Modal,
   Paper,
   Progress,
   SimpleGrid,
@@ -45,6 +47,7 @@ import {
   MapPin,
   RefreshCw,
   Sigma,
+  Sparkles,
   TriangleAlert,
   UserRound,
 } from "lucide-react";
@@ -56,6 +59,7 @@ import {
   getResumeDiagnostics,
   getResumes,
   importComparisonChatGptResponse,
+  reEvaluateWithGemini,
   runComparison,
   setComparisonApplicationDecision,
   updateComparisonParsedInfo,
@@ -381,18 +385,10 @@ async function inferCompanyIndustry(companyName, fallbackText) {
     { regex: /retail|e-?commerce|consumer goods/i, value: "Retail" },
   ];
 
-  const wikiTitle = encodeURIComponent(name.replace(/\s+/g, "_"));
-  try {
-    const response = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${wikiTitle}`);
-    if (response.ok) {
-      const payload = await response.json();
-      const text = `${payload?.description || ""} ${payload?.extract || ""}`;
-      const found = industryMap.find((item) => item.regex.test(text));
-      if (found) return found.value;
-    }
-  } catch {
-    // Fallback to deterministic extraction below.
-  }
+  // Try to infer industry from the company name itself first
+  const nameText = name.toLowerCase();
+  const nameMatch = industryMap.find((item) => item.regex.test(nameText));
+  if (nameMatch) return nameMatch.value;
 
   return extractIndustry(fallbackText);
 }
@@ -611,6 +607,7 @@ function buildPositioningDiagnostics(currentReport, currentPosting, currentProfi
 
 export default function ComparisonReportPage() {
   const { comparisonReportId } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const [report, setReport] = useState(null);
   const [posting, setPosting] = useState(null);
@@ -623,9 +620,11 @@ export default function ComparisonReportPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingDecision, setIsSavingDecision] = useState(false);
   const [isRefreshingEvaluation, setIsRefreshingEvaluation] = useState(false);
+  const [isReEvaluatingGemini, setIsReEvaluatingGemini] = useState(false);
   const [isImportingChatGptResponse, setIsImportingChatGptResponse] = useState(false);
   const [chatGptResponseText, setChatGptResponseText] = useState("");
   const [isReimportMode, setIsReimportMode] = useState(false);
+  const [isManualImportMode, setIsManualImportMode] = useState(false);
   const [isEditingResponse, setIsEditingResponse] = useState(false);
   const [editedResponseText, setEditedResponseText] = useState("");
   const [isEditingDecision, setIsEditingDecision] = useState(false);
@@ -634,7 +633,7 @@ export default function ComparisonReportPage() {
   const [showSoftStrongest, setShowSoftStrongest] = useState(false);
   const [isEditingParsedInfo, setIsEditingParsedInfo] = useState(false);
   const [isSavingParsedInfo, setIsSavingParsedInfo] = useState(false);
-  const [parsedInfoForm, setParsedInfoForm] = useState({ company_name: "", title: "", location: "", salary_range: "", seniority_level: "", workplace_type: "", years_experience: "", commitment_type: "" });
+  const [parsedInfoForm, setParsedInfoForm] = useState({ company_name: "", title: "", location: "", team: "", salary_range: "", seniority_level: "", workplace_type: "", years_experience: "", commitment_type: "" });
 
   async function loadReport() {
     setIsLoading(true);
@@ -644,6 +643,12 @@ export default function ComparisonReportPage() {
       setReport(result);
       if (!result?.chatgpt_response_present) {
         setIsReimportMode(false);
+      }
+
+      // Auto-open manual import panel if navigated here after Gemini fallback
+      if (searchParams.get("fallback") === "1") {
+        setIsManualImportMode(true);
+        setSearchParams({}, { replace: true });
       }
 
       try {
@@ -718,7 +723,7 @@ export default function ComparisonReportPage() {
         title: report.title,
         description_text: descriptionText,
         resume_version_id: report.resume_version_id,
-        evaluation_mode: report.evaluation_source === "local_engine" ? "local_engine" : "chatgpt_api",
+        evaluation_mode: report.evaluation_source === "chatgpt_api" ? "chatgpt_api" : "gemini_api",
       });
       setStatusText("Evaluation refreshed.");
       navigate(`/applications/application/${refreshed.comparison_report_id}`);
@@ -729,23 +734,40 @@ export default function ComparisonReportPage() {
     }
   }
 
+  async function onReEvaluateWithGemini() {
+    setIsReEvaluatingGemini(true);
+    setStatusText("Re-evaluating with Gemini AI...");
+    try {
+      const result = await reEvaluateWithGemini(comparisonReportId);
+      setStatusText("Re-evaluation complete. Reloading report...");
+      await loadReport();
+    } catch (err) {
+      setStatusText(`Gemini re-evaluation failed: ${err.message}`);
+      // Auto-open manual import as fallback
+      setIsManualImportMode(true);
+    } finally {
+      setIsReEvaluatingGemini(false);
+    }
+  }
+
   async function onImportChatGptResponse() {
     const responseText = String(chatGptResponseText || "").trim();
     if (!responseText) {
-      setStatusText("Paste the ChatGPT JSON response before importing.");
+      setStatusText("Paste the LLM JSON response before importing.");
       return;
     }
 
     setIsImportingChatGptResponse(true);
-    setStatusText("Importing ChatGPT response...");
+    setStatusText("Importing LLM response...");
     try {
       await importComparisonChatGptResponse(comparisonReportId, responseText);
       setChatGptResponseText("");
       setIsReimportMode(false);
-      setStatusText("ChatGPT response imported and report updated.");
+      setIsManualImportMode(false);
+      setStatusText("LLM response imported and report updated.");
       await loadReport();
     } catch (err) {
-      setStatusText(`Failed to import ChatGPT response: ${err.message}`);
+      setStatusText(`Failed to import LLM response: ${err.message}`);
     } finally {
       setIsImportingChatGptResponse(false);
     }
@@ -754,12 +776,12 @@ export default function ComparisonReportPage() {
   function onCopyChatGptPrompt() {
     const promptText = String(report?.chatgpt_prompt_text || "").trim();
     if (!promptText) {
-      setStatusText("No ChatGPT prompt is available for this report yet.");
+      setStatusText("No LLM prompt is available for this report yet.");
       return;
     }
     navigator.clipboard
       .writeText(promptText)
-      .then(() => setStatusText("ChatGPT prompt copied to clipboard."))
+      .then(() => setStatusText("LLM prompt copied to clipboard."))
       .catch(() => setStatusText("Unable to copy prompt automatically. Copy it manually from the field."));
   }
 
@@ -775,7 +797,8 @@ export default function ComparisonReportPage() {
     setParsedInfoForm({
       company_name: report?.company_name || "",
       title: report?.title || "",
-      location: posting?.location || "",
+      location: posting?.location || roleContext.locations || "",
+      team: posting?.team || roleContext.team || "",
       salary_range: posting?.salary_range || roleContext.compensation || "",
       seniority_level: posting?.seniority_level || roleContext.level || "",
       workplace_type: posting?.workplace_type || roleContext.workplace || "",
@@ -825,18 +848,20 @@ export default function ComparisonReportPage() {
 
   const statusTone = getStatusTone(statusText);
   const isChatGptMode = report?.evaluation_source === "chatgpt_api";
-  const hasChatGptResponse = Boolean(report?.chatgpt_response_present);
-  const showChatGptImportInputs = isChatGptMode && (!hasChatGptResponse || isReimportMode);
-  const showCompatibilityContent = !isChatGptMode || hasChatGptResponse;
+  const isGeminiMode = report?.evaluation_source === "gemini_api";
+  const hasLlmResponse = Boolean(report?.chatgpt_response_present);
+  const hasChatGptResponse = hasLlmResponse; // backward compat alias
+  const showChatGptImportInputs = isManualImportMode || (isChatGptMode && (!hasChatGptResponse || isReimportMode));
+  const showCompatibilityContent = isGeminiMode || !isChatGptMode || hasChatGptResponse;
 
-  const chatGptResponseJson = report?.chatgpt_response_json || {};
+  const chatGptResponseJson = report?.llm_response_json || report?.chatgpt_response_json || {};
   const strategicEvaluation = chatGptResponseJson?.strategic_evaluation || {};
   const gapAnalysis = chatGptResponseJson?.gap_analysis || {};
   const hardSkillEvaluation = chatGptResponseJson?.hard_skill_evaluation || {};
   const softSkillEvaluation = chatGptResponseJson?.soft_skill_evaluation || {};
 
   const displayedSoftScore = Number(
-    isChatGptMode && hasChatGptResponse
+    (isChatGptMode && hasChatGptResponse) || isGeminiMode
       ? (report?.analysis?.sub_scores?.soft_skills || softSkillEvaluation?.score || 0)
       : (report?.analysis?.sub_scores?.soft_skills || 0)
   );
@@ -856,7 +881,7 @@ export default function ComparisonReportPage() {
 
     return {
       industry: extractIndustry(description),
-      team: extractTeamGroup(description, report?.title),
+      team: posting?.team || extractTeamGroup(description, report?.title),
       locations: extractLocations(description, posting?.location),
       workplace: posting?.workplace_type || extractWorkplace(description),
       compensation: posting?.salary_range || extractCompensation(description),
@@ -865,7 +890,7 @@ export default function ComparisonReportPage() {
       levelSource: posting?.seniority_level ? "parsed" : level.source,
       yearsExperience: posting?.years_experience || extractYearsExperience(description),
     };
-  }, [posting?.description_text, posting?.location, posting?.salary_range, posting?.seniority_level, posting?.workplace_type, posting?.years_experience, posting?.commitment_type, report?.title]);
+  }, [posting?.description_text, posting?.location, posting?.salary_range, posting?.seniority_level, posting?.workplace_type, posting?.years_experience, posting?.commitment_type, posting?.team, report?.title]);
 
   const hardMatched = report?.analysis?.matched_keywords?.hard || [];
   const hardMissing = report?.analysis?.missing_keywords?.hard || [];
@@ -923,7 +948,7 @@ export default function ComparisonReportPage() {
     ? Math.round((matchedRequiredHardSkills.length / requiredHardSkills.length) * 100)
     : 0;
   const displayedHardScore = Number(
-    isChatGptMode && hasChatGptResponse
+    (isChatGptMode && hasChatGptResponse) || isGeminiMode
       ? (report?.analysis?.sub_scores?.hard_skills || hardSkillEvaluation?.score || 0)
       : hardCoverage
   );
@@ -1045,7 +1070,14 @@ export default function ComparisonReportPage() {
                     <Text size="sm" c="dimmed">{report.company_name} · {companyIndustry || roleContext.industry}</Text>
                   </Group>
                   <Title order={2}>{report.title}</Title>
-                  <Text size="sm" c="dimmed">Team: {roleContext.team}</Text>
+                  <Group gap={6} align="center">
+                    <Text size="sm" c="dimmed">Team: {roleContext.team}</Text>
+                    <Tooltip label="Edit parsed information">
+                      <ActionIcon variant="subtle" size="xs" color="gray" onClick={onStartEditParsedInfo}>
+                        <Pencil size={12} />
+                      </ActionIcon>
+                    </Tooltip>
+                  </Group>
 
                   <SimpleGrid cols={{ base: 1, md: 2 }} spacing="xs" mt="xs">
                     <Group gap={6}><ThemeIcon variant="light" size="sm"><MapPin size={14} /></ThemeIcon><Text size="sm" style={{ whiteSpace: "pre-line" }}>{roleContext.locations}</Text></Group>
@@ -1085,21 +1117,34 @@ export default function ComparisonReportPage() {
                       </Menu.Target>
                       <Menu.Dropdown>
                         <Menu.Item
+                          leftSection={<Sparkles size={14} />}
+                          disabled={isReEvaluatingGemini}
+                          onClick={onReEvaluateWithGemini}
+                        >
+                          {isReEvaluatingGemini ? "Re-evaluating..." : "Re-evaluate with Gemini"}
+                        </Menu.Item>
+                        <Menu.Item
                           leftSection={<RefreshCw size={14} />}
                           disabled={isRefreshingEvaluation}
                           onClick={onRefreshEvaluation}
                         >
                           Refresh Evaluation
                         </Menu.Item>
-                        {isChatGptMode && hasChatGptResponse && (
+                        <Menu.Item
+                          leftSection={<Import size={14} />}
+                          onClick={() => { setIsManualImportMode((c) => !c); setIsReimportMode(false); setIsEditingResponse(false); setIsEditingParsedInfo(false); }}
+                        >
+                          {isManualImportMode ? "Cancel Manual Import" : "Manual LLM Import"}
+                        </Menu.Item>
+                        {(isChatGptMode) && hasChatGptResponse && (
                           <Menu.Item
                             leftSection={<Import size={14} />}
-                            onClick={() => { setIsReimportMode((c) => !c); setIsEditingResponse(false); setIsEditingParsedInfo(false); }}
+                            onClick={() => { setIsReimportMode((c) => !c); setIsManualImportMode(false); setIsEditingResponse(false); setIsEditingParsedInfo(false); }}
                           >
-                            {isReimportMode ? "Cancel Re-import" : "Re-import Response"}
+                            {isReimportMode ? "Cancel Re-import" : "Re-import LLM Response"}
                           </Menu.Item>
                         )}
-                        {isChatGptMode && hasChatGptResponse && (
+                        {(isChatGptMode) && hasChatGptResponse && (
                           <Menu.Item
                             leftSection={<Pencil size={14} />}
                             onClick={() => { onStartEditResponse(); }}
@@ -1107,12 +1152,6 @@ export default function ComparisonReportPage() {
                             Edit Response
                           </Menu.Item>
                         )}
-                        <Menu.Item
-                          leftSection={<FileEdit size={14} />}
-                          onClick={onStartEditParsedInfo}
-                        >
-                          Edit Parsed Information
-                        </Menu.Item>
                       </Menu.Dropdown>
                     </Menu>
                   </Group>
@@ -1146,8 +1185,13 @@ export default function ComparisonReportPage() {
                   )}
 
                   <Text size="xs" c="dimmed" ta="right" mt="xs">
-                    Evaluation: {report?.evaluation_source === "chatgpt_api" ? "Chat GPT" : "Local Engine"}
+                    Evaluation: {report?.evaluation_source === "gemini_api" ? "Gemini AI" : report?.evaluation_source === "chatgpt_api" ? "Manual Review" : "Local Engine"}
                   </Text>
+                  {isGeminiMode && (
+                    <Text size="xs" c="teal" ta="right">
+                      Gemini Evaluated
+                    </Text>
+                  )}
                   {isChatGptMode && hasChatGptResponse && !isReimportMode && (
                     <Text size="xs" c="teal" ta="right">
                       Response Imported
@@ -1165,23 +1209,23 @@ export default function ComparisonReportPage() {
               </Tabs.List>
 
               <Tabs.Panel value="overview" pt="md">
-                {report.evaluation_source === "chatgpt_api" && showChatGptImportInputs && (
+                {showChatGptImportInputs && (
                   <Paper withBorder radius="md" p="lg" mb="md">
                     <Stack gap="sm">
                       <Group justify="space-between" align="center">
-                        <Title order={4}>Manual ChatGPT Evaluation</Title>
+                        <Title order={4}>Import External LLM Response</Title>
                         <Badge color={report.chatgpt_response_present ? "teal" : "yellow"} variant="light">
                           {report.chatgpt_response_present ? "Response Imported" : "Response Needed"}
                         </Badge>
                       </Group>
                       <Text size="sm" c="dimmed">
-                        Copy this prompt into ChatGPT, ask for a JSON-only response, then paste that full JSON below to update this report.
+                        Copy this prompt into an LLM (ChatGPT, etc.), ask for a JSON-only response, then paste that full JSON below to update this report.
                       </Text>
                       <Group justify="flex-end">
                         <Button variant="default" onClick={onCopyChatGptPrompt}>Copy Prompt</Button>
                       </Group>
                       <Textarea
-                        label="Prompt for ChatGPT"
+                        label="Prompt for LLM"
                         value={report.chatgpt_prompt_text || ""}
                         rows={4}
                         readOnly
@@ -1189,7 +1233,7 @@ export default function ComparisonReportPage() {
                       />
 
                       <Textarea
-                        label="Paste ChatGPT JSON response"
+                        label="Paste LLM JSON response"
                         placeholder='{"overall_fit_score": 78, ...}'
                         value={chatGptResponseText}
                         onChange={(event) => setChatGptResponseText(event.currentTarget.value)}
@@ -1197,7 +1241,7 @@ export default function ComparisonReportPage() {
                         styles={{ input: { resize: "vertical", minHeight: 110 } }}
                       />
                       <Group justify="flex-end">
-                        <Button variant="default" onClick={() => setIsReimportMode(false)}>Cancel</Button>
+                        <Button variant="default" onClick={() => { setIsReimportMode(false); setIsManualImportMode(false); }}>Cancel</Button>
                         <Button
                           onClick={onImportChatGptResponse}
                           loading={isImportingChatGptResponse}
@@ -1239,13 +1283,8 @@ export default function ComparisonReportPage() {
                     </Stack>
                   </Paper>
                 )}
-                {isEditingParsedInfo && (
-                  <Paper withBorder radius="md" p="lg" mb="md">
+                <Modal opened={isEditingParsedInfo} onClose={() => setIsEditingParsedInfo(false)} title="Edit Parsed Information" centered size="lg">
                     <Stack gap="sm">
-                      <Group justify="space-between" align="center">
-                        <Title order={4}>Edit Parsed Information</Title>
-                        <Badge color="blue" variant="light">Editing</Badge>
-                      </Group>
                       <Text size="sm" c="dimmed">
                         Update the parsed role details for this comparison report.
                       </Text>
@@ -1259,10 +1298,19 @@ export default function ComparisonReportPage() {
                         value={parsedInfoForm.title}
                         onChange={(e) => { const v = e.currentTarget.value; setParsedInfoForm((f) => ({ ...f, title: v })); }}
                       />
-                      <TextInput
+                      <Textarea
                         label="Location"
                         value={parsedInfoForm.location}
                         onChange={(e) => { const v = e.currentTarget.value; setParsedInfoForm((f) => ({ ...f, location: v })); }}
+                        autosize
+                        minRows={2}
+                        maxRows={6}
+                      />
+                      <TextInput
+                        label="Team"
+                        placeholder="e.g. Product Design, Engineering"
+                        value={parsedInfoForm.team}
+                        onChange={(e) => { const v = e.currentTarget.value; setParsedInfoForm((f) => ({ ...f, team: v })); }}
                       />
                       <TextInput
                         label="Salary Range"
@@ -1302,8 +1350,7 @@ export default function ComparisonReportPage() {
                         </Button>
                       </Group>
                     </Stack>
-                  </Paper>
-                )}
+                </Modal>
                 {!showCompatibilityContent && (
                   <Alert color="blue" variant="light" icon={<Info size={16} />} mb="md">
                     Import a ChatGPT JSON response to unlock the role compatibility analysis sections.
@@ -1335,7 +1382,7 @@ export default function ComparisonReportPage() {
                           <Text fw={600}>{displayedHardScore}%</Text>
                         </Group>
                         <Progress value={displayedHardScore} color="violet" />
-                        {isChatGptMode && hasChatGptResponse && (
+                        {((isChatGptMode && hasChatGptResponse) || isGeminiMode) && (
                           <Stack gap="xs" mt="sm">
                             <Text size="sm" c="dimmed">
                               {hardSkillEvaluation?.explanation || ""}
@@ -1383,7 +1430,7 @@ export default function ComparisonReportPage() {
                           <Text fw={600}>{report.analysis.sub_scores.soft_skills}%</Text>
                         </Group>
                         <Progress value={report.analysis.sub_scores.soft_skills} color="cyan" />
-                        {isChatGptMode && hasChatGptResponse && (
+                        {((isChatGptMode && hasChatGptResponse) || isGeminiMode) && (
                           <Stack gap="xs" mt="sm">
                             <Text size="sm" c="dimmed">
                               {softSkillEvaluation?.explanation || ""}
@@ -1430,7 +1477,7 @@ export default function ComparisonReportPage() {
 
               <Grid.Col span={{ base: 12, md: 8 }}>
                 <Stack gap="md">
-                  {isChatGptMode && hasChatGptResponse ? (
+                  {((isChatGptMode && hasChatGptResponse) || isGeminiMode) ? (
                     <>
                       <Paper withBorder radius="md" p="lg">
                         <Group justify="space-between" mb="sm">
@@ -1644,7 +1691,7 @@ export default function ComparisonReportPage() {
                     </>
                   )}
 
-                  {isChatGptMode && hasChatGptResponse && Array.isArray(chatGptResponseJson?.suggested_updates) && chatGptResponseJson.suggested_updates.length > 0 && (
+                  {((isChatGptMode && hasChatGptResponse) || isGeminiMode) && Array.isArray(chatGptResponseJson?.suggested_updates) && chatGptResponseJson.suggested_updates.length > 0 && (
                     <Paper withBorder radius="md" p="lg">
                       <Group justify="space-between" mb="sm">
                         <Title order={4}>Suggested Updates</Title>

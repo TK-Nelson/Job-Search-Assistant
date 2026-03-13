@@ -34,6 +34,7 @@ class ApplicationRead(BaseModel):
     notes: str | None
     created_at: str
     updated_at: str
+    archived_at: str | None = None
     match_score: float | None = None
     comparison_report_id: int | None = None
     industry: str | None = None
@@ -72,10 +73,11 @@ def map_application_row(row: tuple) -> ApplicationRead:
         notes=row[8],
         created_at=row[9],
         updated_at=row[10],
-        match_score=round(float(row[11]), 2) if len(row) > 11 and row[11] is not None else None,
-        comparison_report_id=int(row[12]) if len(row) > 12 and row[12] is not None else None,
-        industry=row[13] if len(row) > 13 else None,
-        logo_url=row[14] if len(row) > 14 else None,
+        archived_at=row[11] if len(row) > 11 else None,
+        match_score=round(float(row[12]), 2) if len(row) > 12 and row[12] is not None else None,
+        comparison_report_id=int(row[13]) if len(row) > 13 and row[13] is not None else None,
+        industry=row[14] if len(row) > 14 else None,
+        logo_url=row[15] if len(row) > 15 else None,
     )
 
 

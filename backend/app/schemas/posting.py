@@ -25,6 +25,7 @@ class JobPostingRead(BaseModel):
     workplace_type: str | None = None
     years_experience: str | None = None
     commitment_type: str | None = None
+    team: str | None = None
     archived_at: str | None = None
 
 
@@ -45,7 +46,8 @@ def map_job_posting_row(row: tuple) -> JobPostingRead:
     db_workplace_type = row[19] if len(row) > 19 else None
     db_years_experience = row[20] if len(row) > 20 else None
     db_commitment_type = row[21] if len(row) > 21 else None
-    db_archived_at = row[22] if len(row) > 22 else None
+    db_team = row[22] if len(row) > 22 else None
+    db_archived_at = row[23] if len(row) > 23 else None
 
     match_score = round(float(analysis_overall_score), 2) if analysis_overall_score is not None else round(parser_confidence * 100, 2)
 
@@ -100,5 +102,6 @@ def map_job_posting_row(row: tuple) -> JobPostingRead:
         workplace_type=db_workplace_type,
         years_experience=db_years_experience,
         commitment_type=db_commitment_type,
+        team=db_team,
         archived_at=db_archived_at,
     )

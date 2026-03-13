@@ -10,6 +10,7 @@ import {
   Table,
   Text,
   Title,
+  Tooltip,
 } from "@mantine/core";
 
 import { getFetchRuns } from "../api";
@@ -104,14 +105,22 @@ export default function FetchLogsPage() {
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Run ID</Table.Th>
-                <Table.Th style={{ whiteSpace: "nowrap" }}>Status</Table.Th>
+                <Table.Th style={{ whiteSpace: "nowrap", minWidth: 120 }}>Status</Table.Th>
                 <Table.Th style={{ minWidth: 130 }}>Started</Table.Th>
                 <Table.Th style={{ minWidth: 130 }}>Completed</Table.Th>
                 <Table.Th>Companies</Table.Th>
                 <Table.Th>New</Table.Th>
                 <Table.Th>Updated</Table.Th>
-                <Table.Th>Skipped</Table.Th>
-                <Table.Th>Filtered</Table.Th>
+                <Table.Th>
+                      <Tooltip label="Links on careers pages that didn't look like job listings (bad URLs, cross-domain, navigation links)" multiline w={280}>
+                        <Text size="sm" fw={700} td="underline" style={{ textDecorationStyle: "dotted", cursor: "help" }}>Skipped</Text>
+                      </Tooltip>
+                    </Table.Th>
+                <Table.Th>
+                      <Tooltip label="Valid job listings excluded because they didn't match your title/description keyword filters" multiline w={280}>
+                        <Text size="sm" fw={700} td="underline" style={{ textDecorationStyle: "dotted", cursor: "help" }}>Filtered</Text>
+                      </Tooltip>
+                    </Table.Th>
                 <Table.Th style={{ minWidth: 220 }}>Errors</Table.Th>
               </Table.Tr>
             </Table.Thead>
@@ -126,8 +135,8 @@ export default function FetchLogsPage() {
                   <Table.Tr key={run.id}>
                     <Table.Td>{run.id}</Table.Td>
                     <Table.Td>
-                      <Badge color={statusColor(run.status)} variant="light" size="sm" style={{ whiteSpace: "nowrap" }}>
-                        {run.status}
+                      <Badge color={statusColor(run.status)} variant="light" size="sm" style={{ whiteSpace: "nowrap", minWidth: 95, textAlign: "center" }}>
+                        {run.status === "partial_failure" ? "Partial Failure" : run.status.charAt(0).toUpperCase() + run.status.slice(1)}
                       </Badge>
                     </Table.Td>
                     <Table.Td><TimestampCell value={run.started_at} /></Table.Td>

@@ -13,6 +13,7 @@ import {
   Menu,
   Modal,
   Paper,
+  SegmentedControl,
   Select,
   SimpleGrid,
   Stack,
@@ -38,13 +39,18 @@ import {
   X,
 } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
+import Highcharts from "highcharts";
+import HighchartsReact from "highcharts-react-official";
 
 import {
   archiveJobPosting,
   createApplication,
+  createCompany,
+  createJobPosting,
   deleteApplication,
   deleteJobPosting,
   getApplicationHistory,
+  getApplicationLifecycleWarnings,
   getApplications,
   getComparisons,
   getCompanies,
@@ -119,6 +125,7 @@ export default function ApplicationsPage() {
   const [companies, setCompanies] = useState([]);
   const [resumes, setResumes] = useState([]);
   const [comparisonByPosting, setComparisonByPosting] = useState({});
+  const [allComparisons, setAllComparisons] = useState([]);
   const [historyByApp, setHistoryByApp] = useState({});
   const [stagesSummary, setStagesSummary] = useState([]);
 
@@ -129,10 +136,13 @@ export default function ApplicationsPage() {
   const [filterSearch, setFilterSearch] = useState("");
   const [expandedHistoryId, setExpandedHistoryId] = useState(null);
   const [showArchivedSection, setShowArchivedSection] = useState(false);
+  const [lifecycleWarnings, setLifecycleWarnings] = useState(null);
 
   // --- create modal ---
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
+  const [createMode, setCreateMode] = useState("existing"); // "existing" | "new"
   const [createForm, setCreateForm] = useState({
     job_posting_id: "",
     resume_version_id: "",
@@ -140,6 +150,11 @@ export default function ApplicationsPage() {
     applied_at: new Date().toISOString().slice(0, 10),
     target_salary: "",
     notes: "",
+    // new-role fields
+    newTitle: "",
+    newCompanyId: "",
+    newCompanyName: "",
+    newSourceUrl: "",
   });
 
   // --- edit modal ---
@@ -167,6 +182,9 @@ export default function ApplicationsPage() {
   // --- busy states ---
   const [busyStageAppId, setBusyStageAppId] = useState(null);
   const [busyActionByPosting, setBusyActionByPosting] = useState({});
+
+  // --- hide rejected toggling ---
+  const [hideRejected, setHideRejected] = useState(true);
 
   // ── Data loaders ──────────────────────────────────────────────
 
@@ -208,14 +226,16 @@ export default function ApplicationsPage() {
   async function loadComparisons() {
     try {
       const response = await getComparisons(500);
+      const items = response.items || [];
+      setAllComparisons(items);
       const latestByPosting = {};
-      for (const item of response.items || []) {
+      for (const item of items) {
         if (!latestByPosting[item.job_posting_id]) {
           latestByPosting[item.job_posting_id] = item;
         }
       }
       setComparisonByPosting(latestByPosting);
-    } catch { setComparisonByPosting({}); }
+    } catch { setAllComparisons([]); setComparisonByPosting({}); }
   }
 
   async function loadStagesSummary() {
@@ -232,6 +252,7 @@ export default function ApplicationsPage() {
     loadPostings();
     loadComparisons();
     loadStagesSummary();
+    getApplicationLifecycleWarnings().then(setLifecycleWarnings).catch(() => {});
   }, []);
 
   // ── Derived data ──────────────────────────────────────────────
@@ -245,6 +266,16 @@ export default function ApplicationsPage() {
     () => new Set(applications.map((a) => a.job_posting_id)),
     [applications]
   );
+
+  /** Filter out applications whose comparison has applied_decision = 'no' */
+  const visibleApplications = useMemo(() => {
+    if (!hideRejected) return applications;
+    return applications.filter((app) => {
+      const comparison = comparisonByPosting[app.job_posting_id];
+      if (!comparison) return true; // no comparison → show
+      return comparison.applied_decision !== "no";
+    });
+  }, [applications, comparisonByPosting, hideRejected]);
 
   const parsedRoles = useMemo(() => {
     return postings.filter((p) => !appliedPostingIds.has(p.id) && !p.archived_at);
@@ -280,9 +311,62 @@ export default function ApplicationsPage() {
     }));
   }, [resumes]);
 
+  const companyOptions = useMemo(() => {
+    return companies.map((c) => ({
+      value: String(c.id),
+      label: c.name,
+    }));
+  }, [companies]);
+
   const stageOptions = STAGES.map((s) => ({ value: s, label: toStageLabel(s) }));
   const statusTone = getStatusTone(statusText);
   const statusColor = statusTone === "error" ? "red" : statusTone === "success" ? "teal" : "blue";
+
+  /** Highcharts options for cumulative applications + reports line chart */
+  const cumulativeChartOptions = useMemo(() => {
+    // Build date → count maps
+    const appDates = {};
+    for (const app of applications) {
+      const d = (app.applied_at || app.created_at || "").slice(0, 10);
+      if (d) appDates[d] = (appDates[d] || 0) + 1;
+    }
+    const compDates = {};
+    for (const comp of allComparisons) {
+      const d = (comp.created_at || "").slice(0, 10);
+      if (d) compDates[d] = (compDates[d] || 0) + 1;
+    }
+
+    // Merge and sort all dates
+    const allDates = [...new Set([...Object.keys(appDates), ...Object.keys(compDates)])].sort();
+    if (allDates.length === 0) return null;
+
+    let cumApps = 0;
+    let cumComps = 0;
+    const appSeries = [];
+    const compSeries = [];
+
+    for (const d of allDates) {
+      cumApps += appDates[d] || 0;
+      cumComps += compDates[d] || 0;
+      const ts = new Date(d + "T00:00:00").getTime();
+      appSeries.push([ts, cumApps]);
+      compSeries.push([ts, cumComps]);
+    }
+
+    return {
+      chart: { type: "line", height: 260, style: { fontFamily: "inherit" } },
+      title: { text: null },
+      xAxis: { type: "datetime", title: { text: null } },
+      yAxis: { title: { text: "Count" }, allowDecimals: false, min: 0 },
+      tooltip: { shared: true, xDateFormat: "%b %d, %Y" },
+      legend: { align: "right", verticalAlign: "top", layout: "horizontal" },
+      credits: { enabled: false },
+      series: [
+        { name: "Applications", data: appSeries, color: "#228be6" },
+        { name: "Comparison Reports", data: compSeries, color: "#40c057" },
+      ],
+    };
+  }, [applications, allComparisons]);
 
   // ── Actions ───────────────────────────────────────────────────
 
@@ -293,9 +377,22 @@ export default function ApplicationsPage() {
 
   async function onCreate(event) {
     event.preventDefault();
-    if (!createForm.job_posting_id) {
-      setStatusText("Select a job posting before creating an application.");
-      return;
+
+    // Validate based on mode
+    if (createMode === "existing") {
+      if (!createForm.job_posting_id) {
+        setStatusText("Select a job posting before creating an application.");
+        return;
+      }
+    } else {
+      if (!createForm.newTitle.trim()) {
+        setStatusText("Enter a role title before creating an application.");
+        return;
+      }
+      if (!createForm.newCompanyId && !createForm.newCompanyName.trim()) {
+        setStatusText("Select a company or enter a new company name.");
+        return;
+      }
     }
     if (!createForm.resume_version_id) {
       setStatusText("Select a resume version before creating an application.");
@@ -303,10 +400,41 @@ export default function ApplicationsPage() {
     }
 
     setIsCreating(true);
+    setCreateError("");
     setStatusText("Creating application & running comparison...");
     try {
+      let postingId = createForm.job_posting_id ? Number(createForm.job_posting_id) : null;
+
+      // If new-role mode, create company (if new) and posting first
+      if (createMode === "new") {
+        let companyId = createForm.newCompanyId ? Number(createForm.newCompanyId) : null;
+
+        // Create new company if needed
+        if (!companyId && createForm.newCompanyName.trim()) {
+          const searchName = createForm.newCompanyName.trim().toLowerCase();
+          const existing = companies.find((c) => c.name.toLowerCase() === searchName);
+          if (existing) {
+            companyId = existing.id;
+          } else {
+            const newCompany = await createCompany({
+              name: createForm.newCompanyName.trim(),
+              followed: false,
+            });
+            companyId = newCompany.id;
+          }
+        }
+
+        // Create the job posting
+        const postingResult = await createJobPosting({
+          company_id: companyId,
+          title: createForm.newTitle.trim(),
+          source_url: createForm.newSourceUrl.trim() || null,
+        });
+        postingId = postingResult.job_posting_id;
+      }
+
       await createApplication({
-        job_posting_id: Number(createForm.job_posting_id),
+        job_posting_id: postingId,
         resume_version_id: Number(createForm.resume_version_id),
         stage: createForm.stage,
         applied_at: createForm.applied_at || null,
@@ -314,11 +442,14 @@ export default function ApplicationsPage() {
         notes: createForm.notes || null,
       });
       setStatusText("Application created with comparison report.");
-      setCreateForm({ job_posting_id: "", resume_version_id: "", stage: "applied", applied_at: new Date().toISOString().slice(0, 10), target_salary: "", notes: "" });
+      setCreateForm({ job_posting_id: "", resume_version_id: "", stage: "applied", applied_at: new Date().toISOString().slice(0, 10), target_salary: "", notes: "", newTitle: "", newCompanyId: "", newCompanyName: "", newSourceUrl: "" });
+      setCreateMode("existing");
       setIsCreateOpen(false);
-      await Promise.all([loadApplications(), loadPostings(), loadComparisons(), loadStagesSummary()]);
+      await Promise.all([loadApplications(), loadPostings(), loadComparisons(), loadStagesSummary(), loadCompanies()]);
     } catch (err) {
-      setStatusText(`Create failed: ${err.message}`);
+      const msg = `Create failed: ${err.message}`;
+      setCreateError(msg);
+      setStatusText(msg);
     } finally {
       setIsCreating(false);
     }
@@ -500,6 +631,14 @@ export default function ApplicationsPage() {
         </SimpleGrid>
       )}
 
+      {/* Cumulative activity chart */}
+      {cumulativeChartOptions && (
+        <Paper withBorder p="md" radius="md">
+          <Title order={4} mb="sm">Activity Over Time</Title>
+          <HighchartsReact highcharts={Highcharts} options={cumulativeChartOptions} />
+        </Paper>
+      )}
+
       {/* Status alert */}
       {statusText && (
         <Alert
@@ -510,6 +649,56 @@ export default function ApplicationsPage() {
           onClose={() => setStatusText("")}
         >
           {statusText}
+        </Alert>
+      )}
+
+      {/* ── Application lifecycle warning banners ─────────────── */}
+      {lifecycleWarnings && lifecycleWarnings.stale > 0 && (
+        <Alert
+          color="yellow"
+          icon={<AlertCircle size={16} />}
+          variant="light"
+          withCloseButton
+          onClose={() => setLifecycleWarnings((prev) => prev ? { ...prev, stale: 0 } : null)}
+          title="Stale applications"
+        >
+          <Text size="sm">{lifecycleWarnings.stale} application(s) have had no activity in 14+ days. Update them or they will be <strong>auto-archived after 30 days</strong> of inactivity.</Text>
+        </Alert>
+      )}
+      {lifecycleWarnings && lifecycleWarnings.approaching_archive > 0 && (
+        <Alert
+          color="orange"
+          icon={<AlertCircle size={16} />}
+          variant="light"
+          withCloseButton
+          onClose={() => setLifecycleWarnings((prev) => prev ? { ...prev, approaching_archive: 0 } : null)}
+          title="Applications approaching auto-archive"
+        >
+          <Text size="sm">{lifecycleWarnings.approaching_archive} application(s) will be <strong>auto-archived</strong> within 7 days due to inactivity. Update them to prevent archival.</Text>
+        </Alert>
+      )}
+      {lifecycleWarnings && lifecycleWarnings.approaching_delete > 0 && (
+        <Alert
+          color="red"
+          icon={<AlertCircle size={16} />}
+          variant="light"
+          withCloseButton
+          onClose={() => setLifecycleWarnings((prev) => prev ? { ...prev, approaching_delete: 0 } : null)}
+          title="Archived applications will be deleted"
+        >
+          <Text size="sm">{lifecycleWarnings.approaching_delete} archived application(s) will be <strong>permanently deleted tomorrow</strong>. Unarchive or update them to prevent deletion.</Text>
+        </Alert>
+      )}
+      {lifecycleWarnings && lifecycleWarnings.recently_archived > 0 && (
+        <Alert
+          color="orange"
+          icon={<Info size={16} />}
+          variant="light"
+          withCloseButton
+          onClose={() => setLifecycleWarnings((prev) => prev ? { ...prev, recently_archived: 0 } : null)}
+          title="Applications auto-archived"
+        >
+          <Text size="sm">{lifecycleWarnings.recently_archived} application(s) were <strong>auto-archived</strong> in the last 24 hours due to 30 days of inactivity. They will be permanently deleted tomorrow.</Text>
         </Alert>
       )}
 
@@ -537,6 +726,14 @@ export default function ApplicationsPage() {
               onChange={(value) => { setFilterStage(value || ""); loadApplications(value || ""); }}
               w={160}
             />
+            <Button
+              size="sm"
+              variant={hideRejected ? "light" : "filled"}
+              color="gray"
+              onClick={() => setHideRejected((v) => !v)}
+            >
+              {hideRejected ? "Show rejected" : "Hide rejected"}
+            </Button>
             <Button leftSection={<Plus size={16} />} onClick={() => setIsCreateOpen(true)}>
               Create Application
             </Button>
@@ -557,7 +754,7 @@ export default function ApplicationsPage() {
 
         {/* Applications rows */}
         <Stack mt="xs" gap="xs">
-          {applications.map((app) => {
+          {visibleApplications.map((app) => {
             const company = companyById[app.company_id] || {};
             const logoUrl = app.logo_url || company.logo_url;
             const comparison = comparisonByPosting[app.job_posting_id];
@@ -637,7 +834,7 @@ export default function ApplicationsPage() {
           })}
 
           {isLoading && <Paper p="sm"><Text size="sm">Loading applications...</Text></Paper>}
-          {applications.length === 0 && !isLoading && <Paper p="sm"><Text size="sm" c="dimmed">No applications yet. Create one from a parsed role below.</Text></Paper>}
+          {visibleApplications.length === 0 && !isLoading && <Paper p="sm"><Text size="sm" c="dimmed">No applications yet. Create one from a parsed role below.</Text></Paper>}
         </Stack>
 
         {/* Expanded history */}
@@ -816,19 +1013,75 @@ export default function ApplicationsPage() {
       )}
 
       {/* ─── CREATE APPLICATION MODAL ───────────────────────────── */}
-      <Modal opened={isCreateOpen} onClose={() => setIsCreateOpen(false)} title="Create Application" centered size="lg">
+      <Modal opened={isCreateOpen} onClose={() => { setIsCreateOpen(false); setCreateError(""); }} title="Create Application" centered size="lg">
         <form onSubmit={onCreate}>
           <Stack>
-            <Select
-              label="Job posting"
-              placeholder="Select a parsed role"
-              data={postingOptions}
-              searchable
-              value={createForm.job_posting_id}
-              onChange={(value) => setCreateForm((x) => ({ ...x, job_posting_id: value || "" }))}
+            {createError && (
+              <Alert color="red" icon={<AlertCircle size={16} />} variant="light" withCloseButton onClose={() => setCreateError("")}>
+                {createError}
+              </Alert>
+            )}
+            <SegmentedControl
+              value={createMode}
+              onChange={setCreateMode}
+              data={[
+                { value: "existing", label: "From fetched roles" },
+                { value: "new", label: "New role" },
+              ]}
               disabled={isCreating}
-              required
+              fullWidth
             />
+
+            {createMode === "existing" ? (
+              <Select
+                label="Job posting"
+                placeholder="Select a parsed role"
+                data={postingOptions}
+                searchable
+                value={createForm.job_posting_id}
+                onChange={(value) => setCreateForm((x) => ({ ...x, job_posting_id: value || "" }))}
+                disabled={isCreating}
+                required
+              />
+            ) : (
+              <>
+                <TextInput
+                  label="Role title"
+                  placeholder="e.g. Senior Software Engineer"
+                  value={createForm.newTitle}
+                  onChange={(e) => setCreateForm((x) => ({ ...x, newTitle: e.target.value }))}
+                  disabled={isCreating}
+                  required
+                />
+                <Select
+                  label="Company"
+                  placeholder="Select an existing company or type to search"
+                  data={companyOptions}
+                  searchable
+                  value={createForm.newCompanyId}
+                  onChange={(value) => setCreateForm((x) => ({ ...x, newCompanyId: value || "", newCompanyName: "" }))}
+                  disabled={isCreating}
+                />
+                {!createForm.newCompanyId && (
+                  <TextInput
+                    label="Or create new company"
+                    placeholder="Enter new company name"
+                    value={createForm.newCompanyName}
+                    onChange={(e) => setCreateForm((x) => ({ ...x, newCompanyName: e.target.value, newCompanyId: "" }))}
+                    disabled={isCreating}
+                    description="A new company will be created if no existing company is selected above."
+                  />
+                )}
+                <TextInput
+                  label="Listing URL (optional)"
+                  placeholder="https://..."
+                  value={createForm.newSourceUrl}
+                  onChange={(e) => setCreateForm((x) => ({ ...x, newSourceUrl: e.target.value }))}
+                  disabled={isCreating}
+                />
+              </>
+            )}
+
             <Select
               label="Resume version"
               placeholder="Select a resume for comparison"

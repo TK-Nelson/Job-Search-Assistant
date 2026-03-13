@@ -100,3 +100,47 @@ def update_personal_profile(payload: dict) -> dict:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": "Payload must be an object."})
     return _save_profile(payload)
+
+
+# ---------------------------------------------------------------------------
+# Gemini API key management
+# ---------------------------------------------------------------------------
+
+@router.get("/settings/gemini-key")
+def get_gemini_key_status() -> dict:
+    """Return whether a key is stored (never exposes the actual key)."""
+    from app.core.secret_store import get_secret
+    key = get_secret("gemini_api_key")
+    masked = f"{key[:4]}…{key[-4:]}" if key and len(key) > 8 else None
+    return {"configured": bool(key), "masked_key": masked}
+
+
+@router.put("/settings/gemini-key")
+def set_gemini_key(payload: dict) -> dict:
+    """Store or clear the Gemini API key."""
+    from app.core.secret_store import set_secret, get_secret
+    from app.services.gemini import reset_client
+
+    api_key = str(payload.get("api_key", "") or "").strip()
+    if not api_key:
+        # Clear the key
+        try:
+            import keyring
+            keyring.delete_password("JobSearchAssistant", "gemini_api_key")
+        except Exception:
+            pass
+        reset_client()
+        return {"configured": False, "masked_key": None}
+
+    set_secret("gemini_api_key", api_key)
+    reset_client()
+
+    masked = f"{api_key[:4]}…{api_key[-4:]}" if len(api_key) > 8 else "****"
+    return {"configured": True, "masked_key": masked}
+
+
+@router.get("/settings/gemini-usage")
+def get_gemini_usage() -> dict:
+    """Return current Gemini rate limiter state."""
+    from app.services.gemini import get_rate_state
+    return get_rate_state().usage_summary()

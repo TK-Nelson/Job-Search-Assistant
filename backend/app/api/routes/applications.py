@@ -21,7 +21,8 @@ router = APIRouter()
 _ENRICHED_SELECT = """
     SELECT a.id, a.job_posting_id, jp.company_id, c.name, jp.title, a.stage, a.applied_at,
            a.target_salary, a.notes, a.created_at, a.updated_at,
-           ar.overall_score,
+           a.archived_at,
+           ROUND((ar.hard_skills_score + ar.soft_skills_score) / 2.0, 2),
            cr.id AS comparison_report_id,
            c.industry,
            c.logo_url
@@ -144,7 +145,7 @@ def list_applications(
     if stage:
         _ensure_stage(stage)
 
-    query = _ENRICHED_SELECT + " WHERE 1=1\n    "
+    query = _ENRICHED_SELECT + " WHERE a.archived_at IS NULL\n    "
     params: list = []
 
     if stage:
@@ -164,6 +165,95 @@ def list_applications(
 
     items = [map_application_row(row) for row in rows]
     return ApplicationListResponse(items=items, count=len(items))
+
+
+@router.get("/applications/lifecycle-warnings")
+def get_application_lifecycle_warnings() -> dict:
+    """Return counts of stale, approaching-archive, approaching-delete, and recently-deleted applications."""
+    try:
+        with get_connection() as conn:
+            # Stale: not updated in 14+ days, not archived
+            stale = conn.execute(
+                """
+                SELECT COUNT(*) FROM applications
+                WHERE archived_at IS NULL
+                  AND updated_at < datetime('now', '-14 days')
+                """
+            ).fetchone()[0]
+
+            # Approaching auto-archive: not updated in 23-30 days, not archived
+            approaching_archive = conn.execute(
+                """
+                SELECT COUNT(*) FROM applications
+                WHERE archived_at IS NULL
+                  AND updated_at < datetime('now', '-23 days')
+                  AND updated_at >= datetime('now', '-30 days')
+                """
+            ).fetchone()[0]
+
+            # Approaching auto-delete: archived, archived_at within last day (will be deleted tomorrow)
+            approaching_delete = conn.execute(
+                """
+                SELECT COUNT(*) FROM applications
+                WHERE archived_at IS NOT NULL
+                  AND archived_at >= datetime('now', '-1 day')
+                """
+            ).fetchone()[0]
+
+            # Recently auto-archived (archived within last 24 hours by the system)
+            recently_archived = conn.execute(
+                """
+                SELECT COUNT(*) FROM applications
+                WHERE archived_at IS NOT NULL
+                  AND archived_at >= datetime('now', '-1 day')
+                """
+            ).fetchone()[0]
+
+    except sqlite3.OperationalError:
+        return {"stale": 0, "approaching_archive": 0, "approaching_delete": 0, "recently_archived": 0}
+
+    return {
+        "stale": stale,
+        "approaching_archive": approaching_archive,
+        "approaching_delete": approaching_delete,
+        "recently_archived": recently_archived,
+    }
+
+
+@router.post("/applications/lifecycle-cleanup")
+def run_application_lifecycle_cleanup() -> dict:
+    """Auto-archive applications inactive 30+ days, auto-delete applications archived 1+ day."""
+    auto_archived = 0
+    auto_deleted = 0
+
+    try:
+        with get_connection() as conn:
+            # Auto-archive: not updated in 30+ days, not already archived
+            archive_result = conn.execute(
+                """
+                UPDATE applications
+                SET archived_at = datetime('now')
+                WHERE archived_at IS NULL
+                  AND updated_at < datetime('now', '-30 days')
+                """
+            )
+            auto_archived = archive_result.rowcount
+
+            # Auto-delete: archived 1+ day ago
+            delete_result = conn.execute(
+                """
+                DELETE FROM applications
+                WHERE archived_at IS NOT NULL
+                  AND archived_at < datetime('now', '-1 day')
+                """
+            )
+            auto_deleted = delete_result.rowcount
+
+            conn.commit()
+    except sqlite3.OperationalError as exc:
+        raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": str(exc)})
+
+    return {"auto_archived": auto_archived, "auto_deleted": auto_deleted}
 
 
 @router.put("/applications/{application_id}", response_model=ApplicationRead)

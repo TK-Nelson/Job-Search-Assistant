@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -15,6 +16,8 @@ from app.schemas.analysis import (
     AnalysisSubScores,
 )
 from app.services.analysis import _safe_ratio, _tokens
+
+logger = logging.getLogger(__name__)
 
 
 LLM_OUTPUT_JSON_SCHEMA: dict = {
@@ -429,3 +432,189 @@ def import_chatgpt_response_to_analysis(
     )
 
 
+# ---------------------------------------------------------------------------
+# Gemini-powered analysis
+# ---------------------------------------------------------------------------
+
+def run_gemini_analysis(
+    resume_version_id: int,
+    job_posting_id: int,
+) -> tuple[AnalysisRunResponse, str]:
+    """
+    Call Google Gemini to evaluate a resume against a job posting.
+
+    Returns (analysis_response, raw_json_text) so callers can store the raw
+    LLM output alongside the structured analysis run.
+    """
+    from app.services.gemini import call_gemini, gemini_available, RateLimitExceeded
+    from app.services.notifications import create_notification
+
+    if not gemini_available():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "GEMINI_NOT_CONFIGURED",
+                "message": "Gemini API key not configured. Go to Settings to set it up.",
+            },
+        )
+
+    resume, posting = _get_resume_and_posting(resume_version_id, job_posting_id)
+    resume_text = str(resume[1] or "")
+    posting_text = f"{posting[1] or ''}\n{posting[2] or ''}"
+
+    if not resume_text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "VALIDATION_ERROR",
+                "message": "Selected resume has no extracted content.",
+                "details": {"field": "resume_version_id"},
+            },
+        )
+    if not posting_text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "VALIDATION_ERROR",
+                "message": "Job listing description is empty.",
+                "details": {"field": "job_posting_id"},
+            },
+        )
+
+    prompt = _build_analysis_prompt(resume_text, posting_text)
+
+    try:
+        parsed = call_gemini(prompt)
+    except RateLimitExceeded as exc:
+        create_notification(
+            level="warning",
+            title="Gemini rate limit",
+            message=str(exc),
+        )
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "RATE_LIMITED", "message": str(exc)},
+        )
+    except RuntimeError as exc:
+        create_notification(
+            level="error",
+            title="Gemini API error",
+            message=str(exc),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "LLM_ERROR", "message": str(exc)},
+        )
+
+    raw_json_text = json.dumps(parsed)
+
+    # Check rate warnings after successful call
+    from app.services.gemini import get_rate_state
+
+    warning = get_rate_state().should_warn()
+    if warning:
+        create_notification(level="warning", title="Gemini usage warning", message=warning)
+
+    # --- Parse the Gemini response (same logic as ChatGPT import) ---
+    hard_eval = parsed.get("hard_skill_evaluation") or {}
+    soft_eval = parsed.get("soft_skill_evaluation") or {}
+
+    hard_score = float(hard_eval.get("score", 0) or 0)
+    soft_score = float(soft_eval.get("score", 0) or 0)
+    overall_score = float(parsed.get("overall_fit_score", 0) or 0)
+
+    resume_tokens = _tokens(resume_text)
+    posting_tokens = _tokens(posting_text)
+    keyword_overlap = len(posting_tokens & resume_tokens)
+    ats_score = round(_safe_ratio(keyword_overlap, max(len(posting_tokens), 1), fallback=0.0), 2)
+
+    hard_matched = [str(v) for v in (hard_eval.get("strongest_matches") or []) if str(v).strip()]
+    hard_missing = [str(v) for v in (hard_eval.get("missing_or_underrepresented") or []) if str(v).strip()]
+    soft_matched = [str(v) for v in (soft_eval.get("strongest_indicators") or []) if str(v).strip()]
+    soft_missing = [str(v) for v in (soft_eval.get("missing_or_unclear") or []) if str(v).strip()]
+
+    requirements = (parsed.get("gap_analysis") or {}).get("requirements") or []
+    evidence_items: list[AnalysisEvidenceItem] = []
+    for row in requirements[:10]:
+        if not isinstance(row, dict):
+            continue
+        requirement = str(row.get("job_requirement", "")).strip()
+        notes = str(row.get("notes", "")).strip()
+        if not requirement:
+            continue
+        evidence_items.append(
+            AnalysisEvidenceItem(
+                category="hard_skills",
+                keyword=requirement,
+                resume_snippet=notes,
+                job_snippet=requirement,
+            )
+        )
+
+    weights = {
+        "ats_searchability": 0.0,
+        "hard_skills": 0.5,
+        "soft_skills": 0.5,
+    }
+
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO analysis_runs (
+                  resume_version_id,
+                  job_posting_id,
+                  overall_score,
+                  ats_score,
+                  hard_skills_score,
+                  soft_skills_score,
+                  weights_json,
+                  matched_keywords_json,
+                  missing_keywords_json,
+                  evidence_json,
+                  parser_quality_flag,
+                  confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', 0.9)
+                """,
+                (
+                    resume_version_id,
+                    job_posting_id,
+                    round(overall_score, 2),
+                    round(ats_score, 2),
+                    round(hard_score, 2),
+                    round(soft_score, 2),
+                    json.dumps(weights),
+                    json.dumps({"hard": hard_matched, "soft": soft_matched}),
+                    json.dumps({"hard": hard_missing, "soft": soft_missing}),
+                    json.dumps([item.model_dump() for item in evidence_items]),
+                ),
+            )
+            analysis_run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+            conn.commit()
+    except sqlite3.OperationalError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "VALIDATION_ERROR",
+                "message": "Database is not initialized.",
+                "details": {"reason": str(exc)},
+            },
+        )
+
+    response = AnalysisRunResponse(
+        analysis_run_id=analysis_run_id,
+        overall_score=round(overall_score, 2),
+        sub_scores=AnalysisSubScores(
+            ats_searchability=round(ats_score, 2),
+            hard_skills=round(hard_score, 2),
+            soft_skills=round(soft_score, 2),
+        ),
+        weights=weights,
+        matched_keywords=AnalysisKeywords(hard=hard_matched, soft=soft_matched),
+        missing_keywords=AnalysisKeywords(hard=hard_missing, soft=soft_missing),
+        evidence=evidence_items,
+        confidence=0.9,
+        parser_quality_flag="ok",
+    )
+
+    return response, raw_json_text

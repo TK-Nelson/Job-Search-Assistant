@@ -532,9 +532,10 @@ export default function CompanyPage() {
           ) : (
             <Paper withBorder radius="md">
               <Paper p="xs" style={{ borderBottom: "1px solid var(--mantine-color-gray-3)" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "3fr 1.5fr 1.2fr 1.2fr", gap: 12, padding: "6px 8px" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "3fr 1.5fr 0.8fr 1.2fr 1.2fr", gap: 12, padding: "6px 8px" }}>
                   <Text fw={600} size="sm">Role</Text>
                   <Text fw={600} size="sm">Location</Text>
+                  <Text fw={600} size="sm">Score</Text>
                   <Text fw={600} size="sm">Date Posted</Text>
                   <Text fw={600} size="sm">First Seen</Text>
                 </div>
@@ -543,7 +544,7 @@ export default function CompanyPage() {
               <Stack gap={0} p="xs">
                 {postings.map((p) => (
                   <Paper key={p.id} p="sm" radius="sm" style={{ borderBottom: "1px solid var(--mantine-color-gray-1)" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "3fr 1.5fr 1.2fr 1.2fr", gap: 12, alignItems: "center" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "3fr 1.5fr 0.8fr 1.2fr 1.2fr", gap: 12, alignItems: "center" }}>
                       <Stack gap={2}>
                         {p.canonical_url ? (
                           <Anchor href={p.canonical_url} target="_blank" rel="noreferrer" size="sm" fw={600}>
@@ -555,6 +556,9 @@ export default function CompanyPage() {
                         {p.salary_range && <Text size="xs" c="dimmed">{p.salary_range}</Text>}
                       </Stack>
                       <Text size="sm">{p.location || "\u2014"}</Text>
+                      <Text size="sm" fw={500} c={p.match_score >= 80 ? "teal" : p.match_score >= 65 ? "yellow.8" : p.match_score > 0 ? "red" : "dimmed"}>
+                        {p.match_score > 0 ? `${p.match_score}%` : "\u2014"}
+                      </Text>
                       <Text size="sm">{formatDate(p.posted_date)}</Text>
                       <Text size="sm">{formatDate(p.first_seen_at)}</Text>
                     </div>

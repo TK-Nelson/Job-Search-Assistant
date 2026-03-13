@@ -49,6 +49,8 @@ class FetchedRoleRead(BaseModel):
     first_seen_at: str
     last_seen_at: str
     status: str
+    match_score: float | None = None  # None = not yet evaluated
+    description_text: str | None = None
     salary_range: str | None
     seniority_level: str | None
     workplace_type: str | None

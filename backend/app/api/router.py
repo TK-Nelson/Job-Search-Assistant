@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import applications, analysis, audit, companies, comparisons, dashboard, db, fetch, fetch_routine, health, maintenance, metrics, optimization, postings, resumes, settings
+from app.api.routes import applications, analysis, audit, companies, comparisons, dashboard, db, fetch, fetch_routine, health, maintenance, metrics, notifications, optimization, postings, resumes, settings
 
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["health"])
@@ -17,5 +17,6 @@ api_router.include_router(fetch_routine.router, tags=["fetch-routine"])
 api_router.include_router(postings.router, tags=["postings"])
 api_router.include_router(analysis.router, tags=["analysis"])
 api_router.include_router(comparisons.router, tags=["comparisons"])
+api_router.include_router(notifications.router, tags=["notifications"])
 api_router.include_router(optimization.router, tags=["optimization"])
 api_router.include_router(resumes.router, tags=["resumes"])

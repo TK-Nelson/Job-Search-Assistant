@@ -11,6 +11,7 @@ import {
   Breadcrumbs,
   Button,
   Checkbox,
+  Collapse,
   FileInput,
   Group,
   Menu,
@@ -29,7 +30,13 @@ import {
 } from "@mantine/core";
 import {
   AlertCircle,
+  Archive,
+  ArchiveRestore,
+  BarChart2,
   Briefcase,
+  CheckCircle,
+  ChevronDown,
+  ChevronUp,
   ExternalLink,
   History,
   Info,
@@ -40,23 +47,34 @@ import {
   RefreshCw,
   Settings2,
   Trash2,
+  X,
 } from "lucide-react";
 
 import {
+  archiveJobPosting,
   createApplication,
   createFetchRoutine,
   deleteFetchRoutine,
   deleteJobPosting,
+  getLifecycleWarnings,
+  updateCompany,
+  updateJobPosting,
   getCompanies,
   getDashboardSummary,
   getFetchedRoles,
+  getFetchPreflight,
   getFetchRoutine,
   getFetchRuns,
+  getJobPostings,
   getResumeDiagnostics,
   getResumes,
   runComparison,
   runFetchNow,
+  saveFetchSearchUrls,
   scrapeComparisonUrl,
+  setComparisonApplicationDecision,
+  testFetchCompany,
+  unarchiveJobPosting,
   updateFetchRoutine,
   uploadResume,
 } from "../api";
@@ -102,6 +120,30 @@ function formatDate(value) {
   return `${months[d.getMonth()]} ${String(d.getDate()).padStart(2,"0")}, ${d.getFullYear()} ${h12}:${String(d.getMinutes()).padStart(2,"0")} ${ampm}`;
 }
 
+/** Return a relative-time string: "<1 hour", "X hour(s)", "X day(s)" (up to 30), exact date after */
+function timeAgo(value) {
+  if (!value) return { relative: "\u2014", exact: "" };
+  const d = value.includes("T") || /^\d{4}-\d{2}-\d{2} /.test(value)
+    ? new Date(value + (value.endsWith("Z") ? "" : "Z"))
+    : new Date(value);
+  if (Number.isNaN(d.getTime())) return { relative: value, exact: "" };
+  const exact = formatDate(value);
+  const now = new Date();
+  const diffMs = now - d;
+  if (diffMs < 0) return { relative: exact, exact };
+  const diffHours = diffMs / (1000 * 60 * 60);
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (diffHours < 1) return { relative: "<1 hour ago", exact };
+  if (diffDays < 1) {
+    const h = Math.floor(diffHours);
+    return { relative: `${h} hour${h === 1 ? "" : "s"} ago`, exact };
+  }
+  if (diffDays <= 30) {
+    return { relative: `${diffDays} day${diffDays === 1 ? "" : "s"} ago`, exact };
+  }
+  return { relative: exact, exact };
+}
+
 /* ── Component ────────────────────────────────────────────────── */
 
 export default function DashboardPage() {
@@ -116,16 +158,38 @@ export default function DashboardPage() {
   const [companies, setCompanies] = useState([]);
   const [resumes, setResumes] = useState([]);
   const [fetchErrors, setFetchErrors] = useState([]);
+  const [fetchErrorsDismissed, setFetchErrorsDismissed] = useState(false);
+
+  /* Quick-edit company modal (opened from fetch errors) */
+  const [editCompanyModalOpen, setEditCompanyModalOpen] = useState(false);
+  const [editCompanyData, setEditCompanyData] = useState(null); // { id, name, careers_url, search_url, portal_type }
+  const [editCompanyForm, setEditCompanyForm] = useState({ careers_url: "", search_url: "" });
+  const [isSavingCompanyEdit, setIsSavingCompanyEdit] = useState(false);
+  const [editCompanyTestResult, setEditCompanyTestResult] = useState(null); // { success, message }
+
+  /* Archived roles */
+  const [archivedPostings, setArchivedPostings] = useState([]);
+  const [showArchivedSection, setShowArchivedSection] = useState(false);
+  const [lifecycleWarnings, setLifecycleWarnings] = useState(null);
 
   /* UI state */
   const [status, setStatus] = useState("");
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [isRunningNow, setIsRunningNow] = useState(false);
+  const [fetchSuccessMsg, setFetchSuccessMsg] = useState("");
   const [isRunningComparison, setIsRunningComparison] = useState(false);
   const [isUploadingResume, setIsUploadingResume] = useState(false);
   const [isScrapingComparisonUrl, setIsScrapingComparisonUrl] = useState(false);
   const [routineModalOpen, setRoutineModalOpen] = useState(false);
   const [isSavingRoutine, setIsSavingRoutine] = useState(false);
+
+  /* Preflight modal state */
+  const [preflightModalOpen, setPreflightModalOpen] = useState(false);
+  const [preflightReady, setPreflightReady] = useState([]);
+  const [preflightNeedsInput, setPreflightNeedsInput] = useState([]);
+  const [preflightUrlInputs, setPreflightUrlInputs] = useState({}); // { companyId: url }
+  const [preflightSkips, setPreflightSkips] = useState(new Set()); // companyIds to skip
+  const [isSavingPreflight, setIsSavingPreflight] = useState(false);
 
   /* Comparison form */
   const [comparisonForm, setComparisonForm] = useState({
@@ -135,9 +199,17 @@ export default function DashboardPage() {
     title: "",
     descriptionText: "",
     resumeVersionId: "",
-    evaluationMode: "chatgpt_api",
+    evaluationMode: "gemini_api",
   });
   const [uploadFile, setUploadFile] = useState(null);
+
+  /* Inline "Did you apply?" prompt */
+  const [appliedPromptRoleId, setAppliedPromptRoleId] = useState(null);
+  const [isAutoApplying, setIsAutoApplying] = useState(false);
+
+  /* Inline title editing */
+  const [editingTitleId, setEditingTitleId] = useState(null);
+  const [editingTitleValue, setEditingTitleValue] = useState("");
 
   /* Routine form (modal) */
   const [routineForm, setRoutineForm] = useState({
@@ -196,7 +268,14 @@ export default function DashboardPage() {
       if (latestRun) {
         try {
           const errs = JSON.parse(latestRun.errors_json || "[]");
-          setFetchErrors(Array.isArray(errs) ? errs : []);
+          const newErrs = Array.isArray(errs) ? errs : [];
+          setFetchErrors((prev) => {
+            // Reset dismissed state if errors changed
+            if (JSON.stringify(prev) !== JSON.stringify(newErrs)) {
+              setFetchErrorsDismissed(false);
+            }
+            return newErrs;
+          });
         } catch {
           setFetchErrors([]);
         }
@@ -222,6 +301,24 @@ export default function DashboardPage() {
     }
   }
 
+  async function loadArchivedPostings() {
+    try {
+      const result = await getJobPostings({ status: "active", limit: 500 });
+      setArchivedPostings((result.items || []).filter((p) => p.archived_at));
+    } catch {
+      /* silent */
+    }
+  }
+
+  async function loadLifecycleWarnings() {
+    try {
+      const warnings = await getLifecycleWarnings();
+      setLifecycleWarnings(warnings);
+    } catch {
+      /* silent */
+    }
+  }
+
   useEffect(() => {
     const onOnline = () => setIsOnline(true);
     const onOffline = () => setIsOnline(false);
@@ -233,6 +330,8 @@ export default function DashboardPage() {
     loadCompanies();
     loadResumes();
     loadFetchErrors();
+    loadArchivedPostings();
+    loadLifecycleWarnings();
     return () => {
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
@@ -242,15 +341,84 @@ export default function DashboardPage() {
   /* ── Actions ────────────────────────────────────────────────── */
 
   async function onRunNow() {
+    // Run preflight check first
+    setStatus("");
+    setFetchSuccessMsg("");
+    try {
+      const preflight = await getFetchPreflight();
+      const needs = preflight.needs_input || [];
+      const ready = preflight.ready || [];
+
+      if (needs.length > 0) {
+        // Some companies need input — show preflight modal
+        setPreflightReady(ready);
+        setPreflightNeedsInput(needs);
+        setPreflightUrlInputs({});
+        setPreflightSkips(new Set());
+        setPreflightModalOpen(true);
+        return;
+      }
+
+      // All companies ready — run fetch directly
+      await executeFetch([]);
+    } catch (err) {
+      setStatus(`Preflight check failed: ${err.message}`);
+    }
+  }
+
+  async function executeFetch(exemptCompanyIds) {
     setIsRunningNow(true);
     setStatus("");
+    setFetchSuccessMsg("");
     try {
-      await runFetchNow();
-      await Promise.all([loadSummary(), loadRoles(), loadFetchErrors()]);
+      const result = await runFetchNow(exemptCompanyIds);
+      await Promise.all([loadSummary(), loadRoles(), loadFetchErrors(), loadArchivedPostings()]);
+      const newCount = result?.postings_new ?? 0;
+      const updatedCount = result?.postings_updated ?? 0;
+      const checkedCount = result?.companies_checked ?? 0;
+      if (newCount > 0) {
+        setFetchSuccessMsg(`Fetch complete — ${newCount} new role${newCount !== 1 ? "s" : ""} found across ${checkedCount} companies.`);
+      } else if (updatedCount > 0) {
+        setFetchSuccessMsg(`Fetch complete — ${updatedCount} role${updatedCount !== 1 ? "s" : ""} refreshed, no new roles. ${checkedCount} companies checked.`);
+      } else {
+        setFetchSuccessMsg(`Fetch complete — no new roles found. ${checkedCount} companies checked.`);
+      }
     } catch (err) {
       setStatus(`Fetch failed: ${err.message}`);
     } finally {
       setIsRunningNow(false);
+    }
+  }
+
+  async function onPreflightContinue() {
+    setIsSavingPreflight(true);
+    try {
+      // Save any search URLs the user entered
+      const updates = Object.entries(preflightUrlInputs)
+        .filter(([, url]) => url.trim())
+        .map(([companyId, url]) => ({ company_id: Number(companyId), search_url: url.trim() }));
+
+      if (updates.length > 0) {
+        await saveFetchSearchUrls(updates);
+      }
+
+      // Build exempt list: companies the user chose to skip AND ones that still have no URL
+      const exemptIds = [...preflightSkips];
+      for (const c of preflightNeedsInput) {
+        const hasNewUrl = preflightUrlInputs[c.id]?.trim();
+        const isSkipped = preflightSkips.has(c.id);
+        if (!hasNewUrl && !isSkipped) {
+          // No URL provided and not explicitly skipped — auto-exempt
+          exemptIds.push(c.id);
+        }
+      }
+
+      setPreflightModalOpen(false);
+      await executeFetch([...new Set(exemptIds)]);
+    } catch (err) {
+      setStatus(`Failed to save search URLs: ${err.message}`);
+    } finally {
+      setIsSavingPreflight(false);
     }
   }
 
@@ -259,23 +427,215 @@ export default function DashboardPage() {
       await deleteJobPosting(postingId);
       setRoles((prev) => prev.filter((r) => r.id !== postingId));
       setRolesTotal((t) => Math.max(0, t - 1));
+      setArchivedPostings((prev) => prev.filter((p) => p.id !== postingId));
     } catch (err) {
       setStatus(`Failed to delete role: ${err.message}`);
     }
   }
 
   async function onMarkAsApplied(role) {
+    if (!resumes.length) {
+      setStatus("Upload a resume first — a comparison report is created when marking as applied.");
+      return;
+    }
+    const defaultResume = resumes[0];
+    setIsRunningComparison(true);
     try {
+      // 1. Scrape description if needed
+      let descText = role.description_text || "";
+      if (descText.length < 40 && role.canonical_url) {
+        try {
+          const scraped = await scrapeComparisonUrl(role.canonical_url);
+          descText = scraped.description_text || descText;
+        } catch { /* fall through */ }
+      }
+
+      let reportId = null;
+      let fallbackQs = "";
+
+      // 2. Create comparison report if description is long enough
+      if (descText.length >= 40) {
+        const result = await runComparison({
+          source_company_id: role.company_id,
+          title: role.title,
+          description_text: descText,
+          resume_version_id: defaultResume.id,
+          source_url: role.canonical_url || undefined,
+        });
+        reportId = result?.comparison_report_id || result?.id;
+        if (result.fallback_reason) fallbackQs = "?fallback=1";
+
+        // 3. Mark comparison as "applied"
+        if (reportId) {
+          await setComparisonApplicationDecision(reportId, true);
+        }
+      }
+
+      // 4. Create application entry
       await createApplication({
         job_posting_id: role.id,
         stage: "applied",
         applied_at: new Date().toISOString().slice(0, 10),
       });
+
+      // 5. Remove from feed
       setRoles((prev) => prev.filter((r) => r.id !== role.id));
       setRolesTotal((t) => Math.max(0, t - 1));
       await loadSummary();
+
+      // 6. Navigate to report if created
+      if (reportId) {
+        navigate(`/applications/application/${reportId}${fallbackQs}`);
+      } else {
+        setStatus("Marked as applied (description too short for comparison report).");
+      }
     } catch (err) {
       setStatus(`Failed to mark as applied: ${err.message}`);
+    } finally {
+      setIsRunningComparison(false);
+    }
+  }
+
+  async function onSaveTitleEdit(roleId) {
+    const trimmed = editingTitleValue.trim();
+    if (!trimmed) return;
+    try {
+      await updateJobPosting(roleId, { title: trimmed });
+      setRoles((prev) => prev.map((r) => (r.id === roleId ? { ...r, title: trimmed } : r)));
+      setEditingTitleId(null);
+    } catch (err) {
+      setStatus(`Failed to update title: ${err.message}`);
+    }
+  }
+
+  async function onCreateComparison(role) {
+    if (!resumes.length) {
+      setStatus("Upload a resume first before creating a comparison report.");
+      return;
+    }
+    const defaultResume = resumes[0];
+    try {
+      setIsRunningComparison(true);
+      // Use the role's description_text if available, otherwise scrape the URL
+      let descText = role.description_text || "";
+      if (descText.length < 40 && role.canonical_url) {
+        try {
+          const scraped = await scrapeComparisonUrl(role.canonical_url);
+          descText = scraped.description_text || descText;
+        } catch {
+          /* fall through with short text */
+        }
+      }
+      if (descText.length < 40) {
+        // Navigate to comparison page with pre-filled data instead
+        navigate(`/comparisons`);
+        setStatus("Description too short for comparison. Please create manually.");
+        return;
+      }
+      const result = await runComparison({
+        source_company_id: role.company_id,
+        title: role.title,
+        description_text: descText,
+        resume_version_id: defaultResume.id,
+        source_url: role.canonical_url || undefined,
+      });
+      const reportId = result?.comparison_report_id || result?.id;
+      if (reportId) {
+        const fallbackQs = result.fallback_reason ? "?fallback=1" : "";
+        navigate(`/applications/application/${reportId}${fallbackQs}`);
+      }
+    } catch (err) {
+      setStatus(`Comparison failed: ${err.message}`);
+    } finally {
+      setIsRunningComparison(false);
+    }
+  }
+
+  /** Auto-create comparison report + mark as applied when user confirms from the inline prompt */
+  async function onConfirmApplied(role) {
+    if (!resumes.length) {
+      setStatus("Upload a resume first before marking as applied with comparison.");
+      setAppliedPromptRoleId(null);
+      return;
+    }
+    const defaultResume = resumes[0];
+    setIsAutoApplying(true);
+    try {
+      // 1. Scrape description if needed
+      let descText = role.description_text || "";
+      if (descText.length < 40 && role.canonical_url) {
+        try {
+          const scraped = await scrapeComparisonUrl(role.canonical_url);
+          descText = scraped.description_text || descText;
+        } catch {
+          /* fall through */
+        }
+      }
+
+      let reportId = null;
+      let fallbackQs = "";
+
+      // 2. Create comparison report (if description available)
+      if (descText.length >= 40) {
+        const result = await runComparison({
+          source_company_id: role.company_id,
+          title: role.title,
+          description_text: descText,
+          resume_version_id: defaultResume.id,
+          source_url: role.canonical_url || undefined,
+        });
+        reportId = result?.comparison_report_id || result?.id;
+        if (result.fallback_reason) fallbackQs = "?fallback=1";
+
+        // 3. Mark comparison as "applied"
+        if (reportId) {
+          await setComparisonApplicationDecision(reportId, true);
+        }
+      }
+
+      // 4. Create application entry
+      await createApplication({
+        job_posting_id: role.id,
+        stage: "applied",
+        applied_at: new Date().toISOString().slice(0, 10),
+      });
+
+      // 5. Remove from feed
+      setRoles((prev) => prev.filter((r) => r.id !== role.id));
+      setRolesTotal((t) => Math.max(0, t - 1));
+      setAppliedPromptRoleId(null);
+      await loadSummary();
+
+      // 6. Navigate to the comparison report if one was created
+      if (reportId) {
+        navigate(`/applications/application/${reportId}${fallbackQs}`);
+      } else {
+        setStatus("Marked as applied (description too short for comparison).");
+      }
+    } catch (err) {
+      setStatus(`Auto-apply failed: ${err.message}`);
+    } finally {
+      setIsAutoApplying(false);
+    }
+  }
+
+  async function onArchiveRole(postingId) {
+    try {
+      await archiveJobPosting(postingId);
+      setRoles((prev) => prev.filter((r) => r.id !== postingId));
+      setRolesTotal((t) => Math.max(0, t - 1));
+      await loadArchivedPostings();
+    } catch (err) {
+      setStatus(`Failed to archive role: ${err.message}`);
+    }
+  }
+
+  async function onUnarchiveRole(postingId) {
+    try {
+      await unarchiveJobPosting(postingId);
+      await Promise.all([loadRoles(), loadArchivedPostings()]);
+    } catch (err) {
+      setStatus(`Failed to unarchive role: ${err.message}`);
     }
   }
 
@@ -303,15 +663,7 @@ export default function DashboardPage() {
 
       // Trigger an immediate fetch after first routine creation
       if (!routine) {
-        setIsRunningNow(true);
-        try {
-          await runFetchNow();
-          await Promise.all([loadSummary(), loadRoles(), loadFetchErrors()]);
-        } catch (err) {
-          setStatus(`Initial fetch failed: ${err.message}`);
-        } finally {
-          setIsRunningNow(false);
-        }
+        await onRunNow();
       } else {
         await loadRoles();
       }
@@ -409,10 +761,14 @@ export default function DashboardPage() {
         title: (comparisonForm.title || "").trim() || "Untitled role",
         description_text: comparisonForm.descriptionText,
         resume_version_id: selectedResumeId,
-        evaluation_mode: comparisonForm.evaluationMode || "chatgpt_api",
+        evaluation_mode: comparisonForm.evaluationMode || "gemini_api",
       };
       const result = await runComparison(payload);
-      navigate(`/applications/application/${result.comparison_report_id}`);
+      const fallbackQs = result.fallback_reason ? "?fallback=1" : "";
+      navigate(`/applications/application/${result.comparison_report_id}${fallbackQs}`);
+      if (result.fallback_reason) {
+        setStatus(`Gemini unavailable — manual LLM import opened. ${result.fallback_reason}`);
+      }
     } catch (err) {
       setStatus(`Comparison failed: ${err.message}`);
     } finally {
@@ -503,6 +859,43 @@ export default function DashboardPage() {
         </Alert>
       )}
 
+      {/* ── Fetch success notification ─────────────────────────── */}
+      {fetchSuccessMsg && (
+        <Alert
+          color="teal"
+          icon={<CheckCircle size={16} />}
+          variant="light"
+          withCloseButton
+          onClose={() => setFetchSuccessMsg("")}
+        >
+          {fetchSuccessMsg}
+        </Alert>
+      )}
+
+      {/* ── Lifecycle warning banner ──────────────────────────── */}
+      {lifecycleWarnings && (lifecycleWarnings.approaching_archive > 0 || lifecycleWarnings.approaching_delete > 0 || lifecycleWarnings.approaching_retention > 0) && (
+        <Alert
+          color="orange"
+          icon={<AlertCircle size={16} />}
+          variant="light"
+          withCloseButton
+          onClose={() => setLifecycleWarnings(null)}
+          title="Upcoming automatic actions"
+        >
+          <Stack gap={4}>
+            {lifecycleWarnings.approaching_archive > 0 && (
+              <Text size="sm">{lifecycleWarnings.approaching_archive} role(s) not viewed in 23+ days will be <strong>auto-archived</strong> within 7 days.</Text>
+            )}
+            {lifecycleWarnings.approaching_delete > 0 && (
+              <Text size="sm">{lifecycleWarnings.approaching_delete} archived role(s) will be <strong>permanently deleted</strong> within 14 days.</Text>
+            )}
+            {lifecycleWarnings.approaching_retention > 0 && (
+              <Text size="sm">{lifecycleWarnings.approaching_retention} inactive role(s) approaching the retention limit will be <strong>removed</strong> soon.</Text>
+            )}
+          </Stack>
+        </Alert>
+      )}
+
       <div className="dashboard-grid">
         {/* ── LEFT COLUMN: Fetch routine + roles ───────────────── */}
         <section className="dashboard-main">
@@ -542,6 +935,14 @@ export default function DashboardPage() {
                   </Group>
                   <Text c="dimmed" size="xs" mt={2}>
                     {FREQUENCY_OPTIONS.find((f) => f.value === String(routine.frequency_minutes))?.label || `${routine.frequency_minutes}m`}
+                    {summary?.latest_fetch_completed_at && (() => {
+                      const ta = timeAgo(summary.latest_fetch_completed_at);
+                      return ta.exact ? (
+                        <Tooltip label={ta.exact} withArrow><span> · Last updated {ta.relative}</span></Tooltip>
+                      ) : (
+                        <> · Last updated {ta.relative}</>
+                      );
+                    })()}
                   </Text>
                 </div>
                 <Group gap="xs">
@@ -564,11 +965,11 @@ export default function DashboardPage() {
               </Group>
 
               {/* Fetch error accordion */}
-              {fetchErrors.length > 0 && (
+              {fetchErrors.length > 0 && !fetchErrorsDismissed && (
                 <Accordion variant="contained" radius="md" mt="sm">
                   <Accordion.Item value="fetch-errors">
                     <Accordion.Control icon={<AlertCircle size={18} color="var(--mantine-color-red-6)" />}>
-                      <Group gap="xs">
+                      <Group gap="xs" justify="space-between" wrap="nowrap" style={{ width: '100%' }}>
                         <Text size="sm" fw={600} c="red">{fetchErrors.length} fetch error{fetchErrors.length !== 1 ? "s" : ""} from latest run</Text>
                       </Group>
                     </Accordion.Control>
@@ -576,15 +977,39 @@ export default function DashboardPage() {
                       <Stack gap={6}>
                         {fetchErrors.map((err, i) => {
                           const colonIdx = err.indexOf(": ");
-                          const company = colonIdx > 0 ? err.slice(0, colonIdx) : "Unknown";
+                          const companyName = colonIdx > 0 ? err.slice(0, colonIdx) : "Unknown";
                           const message = colonIdx > 0 ? err.slice(colonIdx + 2) : err;
+                          const matchedCompany = companies.find(
+                            (c) => String(c.name || "").toLowerCase() === companyName.toLowerCase()
+                          );
                           return (
                             <Group key={i} gap={8} wrap="nowrap" align="flex-start">
-                              <Badge color="red" variant="light" size="sm" style={{ flexShrink: 0 }}>{company}</Badge>
+                              <Badge
+                                color="red"
+                                variant="light"
+                                size="sm"
+                                style={{ flexShrink: 0, cursor: matchedCompany ? "pointer" : "default" }}
+                                onClick={() => {
+                                  if (matchedCompany) {
+                                    setEditCompanyData(matchedCompany);
+                                    setEditCompanyForm({
+                                      careers_url: matchedCompany.careers_url || "",
+                                      search_url: matchedCompany.search_url || "",
+                                    });
+                                    setEditCompanyModalOpen(true);
+                                  }
+                                }}
+                                title={matchedCompany ? "Click to edit company" : undefined}
+                              >
+                                {companyName}{matchedCompany ? " ✎" : ""}
+                              </Badge>
                               <Text size="sm">{message}</Text>
                             </Group>
                           );
                         })}
+                        <Group justify="flex-end" mt={4}>
+                          <Button size="xs" variant="subtle" color="gray" leftSection={<X size={14} />} onClick={() => setFetchErrorsDismissed(true)}>Dismiss</Button>
+                        </Group>
                       </Stack>
                     </Accordion.Panel>
                   </Accordion.Item>
@@ -593,7 +1018,7 @@ export default function DashboardPage() {
 
               {/* Roles table — card-row grid matching platform pattern */}
               <Paper p="xs" radius="md" mt="xs" style={{ borderBottom: "1px solid var(--mantine-color-gray-3)" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "3.5fr 1.5fr 1.5fr 0.4fr", gap: 12, padding: "6px 8px" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "3.5fr 1.2fr 1.2fr 0.4fr", gap: 12, padding: "6px 8px" }}>
                   <Text fw={600} size="sm">Role</Text>
                   <Text fw={600} size="sm">Date Posted</Text>
                   <Text fw={600} size="sm">First Seen</Text>
@@ -604,14 +1029,35 @@ export default function DashboardPage() {
               <Stack mt="xs" gap="xs">
                 {roles.map((role) => (
                   <Paper key={role.id} p="sm" radius="md">
-                    <div style={{ display: "grid", gridTemplateColumns: "3.5fr 1.5fr 1.5fr 0.4fr", gap: 12, alignItems: "center" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "3.5fr 1.2fr 1.2fr 0.4fr", gap: 12, alignItems: "center" }}>
                       <Group gap="sm" wrap="nowrap">
                         <Avatar src={role.company_logo_url} alt={role.company_name} size="md" radius={8}>
                           {role.company_name?.[0]}
                         </Avatar>
                         <Stack gap={2}>
-                          {role.canonical_url && /^https?:\/\//.test(role.canonical_url) ? (
-                            <Anchor href={role.canonical_url} target="_blank" rel="noopener" fw={600} size="sm" lineClamp={1}>
+                          {editingTitleId === role.id ? (
+                            <TextInput
+                              size="xs"
+                              value={editingTitleValue}
+                              onChange={(e) => setEditingTitleValue(e.currentTarget.value)}
+                              onBlur={() => onSaveTitleEdit(role.id)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") onSaveTitleEdit(role.id);
+                                if (e.key === "Escape") setEditingTitleId(null);
+                              }}
+                              autoFocus
+                              style={{ minWidth: 200 }}
+                            />
+                          ) : role.canonical_url && /^https?:\/\//.test(role.canonical_url) ? (
+                            <Anchor
+                              href={role.canonical_url}
+                              target="_blank"
+                              rel="noopener"
+                              fw={600}
+                              size="sm"
+                              lineClamp={1}
+                              onClick={() => setAppliedPromptRoleId(role.id)}
+                            >
                               {role.title}
                             </Anchor>
                           ) : (
@@ -622,12 +1068,20 @@ export default function DashboardPage() {
                           </Anchor>
                         </Stack>
                       </Group>
-                      <Text size="sm" c="dimmed">
-                        {role.posted_date ? formatDate(role.posted_date) : "—"}
-                      </Text>
-                      <Text size="sm" c="dimmed">
-                        {role.first_seen_at ? formatDate(role.first_seen_at) : "—"}
-                      </Text>
+                      {(() => {
+                        const ta = role.posted_date ? timeAgo(role.posted_date) : null;
+                        return ta ? (
+                          ta.exact ? <Tooltip label={ta.exact} withArrow><Text size="sm" c="dimmed">{ta.relative}</Text></Tooltip>
+                            : <Text size="sm" c="dimmed">{ta.relative}</Text>
+                        ) : <Text size="sm" c="dimmed">—</Text>;
+                      })()}
+                      {(() => {
+                        const ta = role.first_seen_at ? timeAgo(role.first_seen_at) : null;
+                        return ta ? (
+                          ta.exact ? <Tooltip label={ta.exact} withArrow><Text size="sm" c="dimmed">{ta.relative}</Text></Tooltip>
+                            : <Text size="sm" c="dimmed">{ta.relative}</Text>
+                        ) : <Text size="sm" c="dimmed">—</Text>;
+                      })()}
                       <Menu shadow="md" width={200} position="bottom-end" withArrow>
                         <Menu.Target>
                           <ActionIcon variant="subtle" size="sm">
@@ -648,16 +1102,32 @@ export default function DashboardPage() {
                           )}
                           <Menu.Item
                             leftSection={<Pencil size={14} />}
-                            component={Link}
-                            to={`/applications`}
+                            onClick={() => {
+                              setEditingTitleId(role.id);
+                              setEditingTitleValue(role.title);
+                            }}
                           >
-                            Edit role
+                            Edit title
+                          </Menu.Item>
+                          <Menu.Item
+                            leftSection={<BarChart2 size={14} />}
+                            onClick={() => onCreateComparison(role)}
+                            disabled={isRunningComparison}
+                          >
+                            Create comparison report
                           </Menu.Item>
                           <Menu.Item
                             leftSection={<Briefcase size={14} />}
                             onClick={() => onMarkAsApplied(role)}
+                            disabled={isRunningComparison}
                           >
                             Mark as applied
+                          </Menu.Item>
+                          <Menu.Item
+                            leftSection={<Archive size={14} />}
+                            onClick={() => onArchiveRole(role.id)}
+                          >
+                            Archive
                           </Menu.Item>
                           <Menu.Divider />
                           <Menu.Item
@@ -670,16 +1140,100 @@ export default function DashboardPage() {
                         </Menu.Dropdown>
                       </Menu>
                     </div>
+
+                    {/* Inline "Did you apply?" prompt */}
+                    <Collapse in={appliedPromptRoleId === role.id}>
+                      <Paper
+                        mt="xs"
+                        p="xs"
+                        radius="md"
+                        style={{ background: "var(--mantine-color-blue-0)", border: "1px solid var(--mantine-color-blue-2)" }}
+                      >
+                        <Group justify="space-between" align="center">
+                          <Text size="sm" fw={500}>Did you apply to this role?</Text>
+                          <Group gap="xs">
+                            <Button
+                              size="xs"
+                              color="teal"
+                              variant="filled"
+                              leftSection={<CheckCircle size={14} />}
+                              loading={isAutoApplying}
+                              onClick={() => onConfirmApplied(role)}
+                            >
+                              Yes, I applied
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="default"
+                              onClick={() => setAppliedPromptRoleId(null)}
+                              disabled={isAutoApplying}
+                            >
+                              No
+                            </Button>
+                          </Group>
+                        </Group>
+                      </Paper>
+                    </Collapse>
                   </Paper>
                 ))}
                 {roles.length === 0 && (
                   <Paper p="md" radius="md">
                     <Text c="dimmed" ta="center" py="md">
-                      No roles fetched yet. Click the play button to run a fetch.
+                      No new roles to review. Roles you've applied to or archived won't appear here.
                     </Text>
                   </Paper>
                 )}
               </Stack>
+
+              {/* ── Archived Roles Accordion ──────────────────── */}
+              {archivedPostings.length > 0 && (
+                <Paper mt="md" radius="md">
+                  <Group
+                    justify="space-between"
+                    p="sm"
+                    style={{ cursor: "pointer" }}
+                    onClick={() => setShowArchivedSection((v) => !v)}
+                  >
+                    <Group gap="xs">
+                      <Archive size={16} color="var(--mantine-color-dimmed)" />
+                      <Text fw={600} size="sm">Hidden Roles</Text>
+                      <Badge variant="light" color="gray" size="sm">{archivedPostings.length}</Badge>
+                    </Group>
+                    {showArchivedSection ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                  </Group>
+                  <Collapse in={showArchivedSection}>
+                    <Stack gap="xs" p="sm" pt={0}>
+                      {archivedPostings.map((posting) => (
+                        <Paper key={posting.id} p="xs" radius="md" withBorder>
+                          <Group justify="space-between" wrap="nowrap">
+                            <Group gap="sm" wrap="nowrap" style={{ minWidth: 0 }}>
+                              <Avatar src={posting.company_logo_url} alt={posting.company_name} size="sm" radius={6}>
+                                {posting.company_name?.[0]}
+                              </Avatar>
+                              <div style={{ minWidth: 0 }}>
+                                <Text fw={500} size="sm" lineClamp={1}>{posting.title}</Text>
+                                <Text size="xs" c="dimmed">{posting.company_name} · Archived {(() => { const ta = timeAgo(posting.archived_at); return ta.exact ? <Tooltip label={ta.exact} withArrow><span>{ta.relative}</span></Tooltip> : ta.relative; })()}</Text>
+                              </div>
+                            </Group>
+                            <Group gap="xs" wrap="nowrap">
+                              <Tooltip label="Unarchive">
+                                <ActionIcon variant="subtle" size="sm" onClick={() => onUnarchiveRole(posting.id)}>
+                                  <ArchiveRestore size={14} />
+                                </ActionIcon>
+                              </Tooltip>
+                              <Tooltip label="Delete permanently">
+                                <ActionIcon variant="subtle" color="red" size="sm" onClick={() => onDeleteRole(posting.id)}>
+                                  <Trash2 size={14} />
+                                </ActionIcon>
+                              </Tooltip>
+                            </Group>
+                          </Group>
+                        </Paper>
+                      ))}
+                    </Stack>
+                  </Collapse>
+                </Paper>
+              )}
             </Paper>
           )}
         </section>
@@ -715,11 +1269,11 @@ export default function DashboardPage() {
               <Select
                 label="Evaluation mode"
                 value={comparisonForm.evaluationMode}
-                onChange={(value) => updateComparisonField("evaluationMode", value || "chatgpt_api")}
+                onChange={(value) => updateComparisonField("evaluationMode", value || "gemini_api")}
                 disabled={isRunningComparison}
                 data={[
-                  { value: "chatgpt_api", label: "Manual Chat GPT" },
-                  { value: "local_engine", label: "Run locally" },
+                  { value: "gemini_api", label: "Gemini AI (auto)" },
+                  { value: "chatgpt_api", label: "Import external LLM response" },
                 ]}
                 allowDeselect={false}
               />
@@ -855,7 +1409,7 @@ export default function DashboardPage() {
           <Checkbox
             label="Include all followed companies"
             checked={routineForm.use_followed_companies}
-            onChange={(event) => setRoutineForm((f) => ({ ...f, use_followed_companies: event.currentTarget.checked }))}
+            onChange={(event) => { const c = event.currentTarget.checked; setRoutineForm((f) => ({ ...f, use_followed_companies: c })); }}
           />
 
           <MultiSelect
@@ -893,6 +1447,184 @@ export default function DashboardPage() {
                 {hasRoutine ? "Save changes" : "Create & run fetch"}
               </Button>
             </Group>
+          </Group>
+        </Stack>
+      </Modal>
+
+      {/* ── Preflight Modal ─────────────────────────────────────── */}
+      <Modal
+        opened={preflightModalOpen}
+        onClose={() => setPreflightModalOpen(false)}
+        title="Configure company portals"
+        size="lg"
+      >
+        <Stack gap="md">
+          {preflightReady.length > 0 && (
+            <Alert color="teal" variant="light" icon={<CheckCircle size={16} />}>
+              {preflightReady.length} compan{preflightReady.length === 1 ? "y is" : "ies are"} ready to fetch
+              ({preflightReady.map((c) => c.name).join(", ")})
+            </Alert>
+          )}
+
+          {preflightNeedsInput.length > 0 && (
+            <>
+              <Text size="sm" c="dimmed">
+                The following companies don't have a search portal configured.
+                Enter a job search URL, or check "Skip" to exclude them from this fetch.
+              </Text>
+
+              {preflightNeedsInput.map((company) => (
+                <Paper key={company.id} p="sm" withBorder>
+                  <Group justify="space-between" mb={4}>
+                    <Text fw={600} size="sm">{company.name}</Text>
+                    <Checkbox
+                      label="Skip this time"
+                      size="xs"
+                      checked={preflightSkips.has(company.id)}
+                      onChange={(e) => {
+                        const isChecked = e.currentTarget.checked;
+                        setPreflightSkips((prev) => {
+                          const next = new Set(prev);
+                          if (isChecked) next.add(company.id);
+                          else next.delete(company.id);
+                          return next;
+                        });
+                      }}
+                    />
+                  </Group>
+                  {company.careers_url && (
+                    <Text size="xs" c="dimmed" mb={4} truncate>
+                      Careers page: {company.careers_url}
+                    </Text>
+                  )}
+                  <TextInput
+                    placeholder="https://company.example.com/search-jobs"
+                    size="xs"
+                    disabled={preflightSkips.has(company.id)}
+                    value={preflightUrlInputs[company.id] || ""}
+                    onChange={(e) => {
+                      const val = e.currentTarget.value;
+                      setPreflightUrlInputs((prev) => ({
+                        ...prev,
+                        [company.id]: val,
+                      }));
+                    }}
+                  />
+                </Paper>
+              ))}
+            </>
+          )}
+
+          <Group justify="flex-end" mt="sm">
+            <Button variant="default" onClick={() => setPreflightModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={onPreflightContinue}
+              loading={isSavingPreflight}
+            >
+              {preflightNeedsInput.every((c) => preflightSkips.has(c.id))
+                ? "Skip all & fetch"
+                : "Save & fetch"}
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      {/* Quick-edit company modal (from fetch errors) */}
+      <Modal
+        opened={editCompanyModalOpen}
+        onClose={() => { setEditCompanyModalOpen(false); setEditCompanyData(null); setEditCompanyTestResult(null); }}
+        title={editCompanyData ? `Edit ${editCompanyData.name}` : "Edit company"}
+        centered
+      >
+        <Stack>
+          <TextInput
+            label="Careers / Job board URL"
+            type="url"
+            placeholder="https://company.com/careers"
+            value={editCompanyForm.careers_url}
+            onChange={(e) => { const v = e.currentTarget.value; setEditCompanyForm((f) => ({ ...f, careers_url: v })); }}
+            disabled={isSavingCompanyEdit}
+          />
+          <TextInput
+            label="Search portal URL"
+            type="url"
+            placeholder="https://company.com/search-jobs?q="
+            value={editCompanyForm.search_url}
+            onChange={(e) => { const v = e.currentTarget.value; setEditCompanyForm((f) => ({ ...f, search_url: v })); }}
+            disabled={isSavingCompanyEdit}
+          />
+          {editCompanyData?.portal_type && (
+            <Text size="xs" c="dimmed">Detected portal type: <strong>{editCompanyData.portal_type}</strong></Text>
+          )}
+          {editCompanyTestResult && (
+            <Alert
+              color={editCompanyTestResult.success ? "green" : "red"}
+              icon={editCompanyTestResult.success ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
+              variant="light"
+              withCloseButton
+              onClose={() => setEditCompanyTestResult(null)}
+            >
+              {editCompanyTestResult.message}
+            </Alert>
+          )}
+          <Group justify="flex-end" mt="sm">
+            <Button
+              variant="light"
+              size="xs"
+              leftSection={<Play size={14} />}
+              loading={isSavingCompanyEdit}
+              onClick={async () => {
+                if (!editCompanyData) return;
+                setIsSavingCompanyEdit(true);
+                setEditCompanyTestResult(null);
+                try {
+                  // Save first so portal_type gets auto-detected
+                  const updated = await updateCompany(editCompanyData.id, {
+                    name: editCompanyData.name,
+                    careers_url: editCompanyForm.careers_url || null,
+                    search_url: editCompanyForm.search_url || null,
+                  });
+                  setEditCompanyData(updated);
+                  // Then test
+                  const result = await testFetchCompany(editCompanyData.id);
+                  if (result.errors && result.errors.length > 0) {
+                    setEditCompanyTestResult({ success: false, message: result.errors.join("; ") });
+                  } else {
+                    setEditCompanyTestResult({ success: true, message: `Found ${result.postings_found} posting${result.postings_found !== 1 ? "s" : ""}. Portal type: ${result.portal_type || "unknown"}` });
+                  }
+                } catch (err) {
+                  setEditCompanyTestResult({ success: false, message: `Test failed: ${err.message}` });
+                } finally {
+                  setIsSavingCompanyEdit(false);
+                }
+              }}
+            >Save & Test</Button>
+            <Button variant="default" onClick={() => { setEditCompanyModalOpen(false); setEditCompanyData(null); setEditCompanyTestResult(null); }} disabled={isSavingCompanyEdit}>Cancel</Button>
+            <Button
+              loading={isSavingCompanyEdit}
+              onClick={async () => {
+                if (!editCompanyData) return;
+                setIsSavingCompanyEdit(true);
+                try {
+                  await updateCompany(editCompanyData.id, {
+                    name: editCompanyData.name,
+                    careers_url: editCompanyForm.careers_url || null,
+                    search_url: editCompanyForm.search_url || null,
+                  });
+                  setEditCompanyModalOpen(false);
+                  setEditCompanyData(null);
+                  setEditCompanyTestResult(null);
+                  await loadCompanies();
+                  await loadFetchErrors();
+                } catch (err) {
+                  setStatus(`Failed to update company: ${err.message}`);
+                } finally {
+                  setIsSavingCompanyEdit(false);
+                }
+              }}
+            >Save</Button>
           </Group>
         </Stack>
       </Modal>

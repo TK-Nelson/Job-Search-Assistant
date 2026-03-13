@@ -20,6 +20,8 @@ import { Link } from "react-router-dom";
 import {
   createBackup,
   getBackups,
+  getGeminiKeyStatus,
+  getGeminiUsage,
   getPersonalProfile,
   getSettings,
   initDb,
@@ -27,6 +29,7 @@ import {
   runRetentionCleanup,
   savePersonalProfile,
   saveSettings,
+  setGeminiKey,
   validatePaths,
 } from "../api";
 
@@ -94,6 +97,11 @@ export default function SettingsPage() {
   const [status, setStatus] = useState("");
   const [busyAction, setBusyAction] = useState("");
 
+  // Gemini key state
+  const [geminiKeyStatus, setGeminiKeyStatus] = useState(null);
+  const [geminiKeyInput, setGeminiKeyInput] = useState("");
+  const [geminiUsage, setGeminiUsage] = useState(null);
+
   useEffect(() => {
     getSettings()
       .then((data) => setForm(data))
@@ -102,6 +110,14 @@ export default function SettingsPage() {
     getPersonalProfile()
       .then((data) => setPersonalProfile(data))
       .catch((err) => setStatus(`Failed to load personal profile: ${err.message}`));
+
+    getGeminiKeyStatus()
+      .then((data) => setGeminiKeyStatus(data))
+      .catch(() => {});
+
+    getGeminiUsage()
+      .then((data) => setGeminiUsage(data))
+      .catch(() => {});
 
     loadBackups();
   }, []);
@@ -201,36 +217,37 @@ export default function SettingsPage() {
       if (path === "retention.logs_days") {
         return { ...current, retention: { ...current.retention, logs_days: toNumber(value, 30) } };
       }
-      if (path === "scoring.weights.ats_searchability") {
-        return {
-          ...current,
-          scoring: {
-            ...current.scoring,
-            weights: { ...current.scoring.weights, ats_searchability: Number(value) },
-          },
-        };
-      }
-      if (path === "scoring.weights.hard_skills") {
-        return {
-          ...current,
-          scoring: {
-            ...current.scoring,
-            weights: { ...current.scoring.weights, hard_skills: Number(value) },
-          },
-        };
-      }
-      if (path === "scoring.weights.soft_skills") {
-        return {
-          ...current,
-          scoring: {
-            ...current.scoring,
-            weights: { ...current.scoring.weights, soft_skills: Number(value) },
-          },
-        };
-      }
 
       return current;
     });
+  }
+
+  async function onSaveGeminiKey() {
+    setBusyAction("gemini-key");
+    setStatus("Saving Gemini API key...");
+    try {
+      const result = await setGeminiKey(geminiKeyInput.trim());
+      setGeminiKeyStatus(result);
+      setGeminiKeyInput("");
+      setStatus(result.configured ? "Gemini API key saved." : "Gemini API key cleared.");
+    } catch (err) {
+      setStatus(`Failed to save Gemini key: ${err.message}`);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function onClearGeminiKey() {
+    setBusyAction("gemini-key");
+    try {
+      const result = await setGeminiKey("");
+      setGeminiKeyStatus(result);
+      setStatus("Gemini API key cleared.");
+    } catch (err) {
+      setStatus(`Failed to clear key: ${err.message}`);
+    } finally {
+      setBusyAction("");
+    }
   }
 
   async function onValidate() {
@@ -491,11 +508,6 @@ export default function SettingsPage() {
         <TextInput type="number" label="Postings retention (days)" value={String(form.retention.job_postings_days)} onChange={(e) => update("retention.job_postings_days", e.target.value)} disabled={isBusy} />
         <TextInput type="number" label="Logs retention (days)" value={String(form.retention.logs_days)} onChange={(e) => update("retention.logs_days", e.target.value)} disabled={isBusy} />
       </Group>
-      <Group grow mt="sm" align="end">
-        <TextInput type="number" step="0.01" label="ATS weight" value={String(form.scoring.weights.ats_searchability)} onChange={(e) => update("scoring.weights.ats_searchability", e.target.value)} disabled={isBusy} />
-        <TextInput type="number" step="0.01" label="Hard skills weight" value={String(form.scoring.weights.hard_skills)} onChange={(e) => update("scoring.weights.hard_skills", e.target.value)} disabled={isBusy} />
-        <TextInput type="number" step="0.01" label="Soft skills weight" value={String(form.scoring.weights.soft_skills)} onChange={(e) => update("scoring.weights.soft_skills", e.target.value)} disabled={isBusy} />
-      </Group>
 
       <Group mt="md">
         <Button onClick={onValidate} loading={busyAction === "validate"} disabled={isBusy && busyAction !== "validate"}>Test paths</Button>
@@ -503,6 +515,40 @@ export default function SettingsPage() {
         <Button variant="light" onClick={onRestoreDefaults} disabled={isBusy}>Restore safe defaults</Button>
         <Button variant="light" onClick={onInitDb} loading={busyAction === "init-db"} disabled={isBusy && busyAction !== "init-db"}>Initialize DB</Button>
       </Group>
+
+      <Paper withBorder p="md" radius="md" mt="md">
+        <Text fw={600}>Gemini AI Integration</Text>
+        <Text c="dimmed" size="sm">Configure your Google Gemini API key for automated resume-to-job analysis. Get a free key at <Anchor href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">aistudio.google.com</Anchor></Text>
+        <Group mt="sm" align="end">
+          <TextInput
+            label="Gemini API key"
+            value={geminiKeyInput}
+            onChange={(e) => setGeminiKeyInput(e.target.value)}
+            placeholder={geminiKeyStatus?.configured ? `Current: ${geminiKeyStatus.masked_key}` : "Paste your API key"}
+            disabled={isBusy}
+            style={{ flex: 1 }}
+            type="password"
+          />
+          <Button onClick={onSaveGeminiKey} loading={busyAction === "gemini-key"} disabled={(isBusy && busyAction !== "gemini-key") || !geminiKeyInput.trim()}>
+            {geminiKeyStatus?.configured ? "Update key" : "Save key"}
+          </Button>
+          {geminiKeyStatus?.configured && (
+            <Button variant="light" color="red" onClick={onClearGeminiKey} loading={busyAction === "gemini-key"} disabled={isBusy && busyAction !== "gemini-key"}>
+              Clear key
+            </Button>
+          )}
+        </Group>
+        {geminiKeyStatus?.configured && (
+          <Alert color="green" variant="light" mt="sm">API key configured ({geminiKeyStatus.masked_key})</Alert>
+        )}
+        {geminiUsage && (
+          <Group mt="sm" gap="xl">
+            <Text size="xs" c="dimmed">Today: {geminiUsage.requests_today}/{geminiUsage.requests_limit} requests</Text>
+            <Text size="xs" c="dimmed">Tokens: {geminiUsage.tokens_today?.toLocaleString()}/{geminiUsage.tokens_limit?.toLocaleString()}</Text>
+            <Text size="xs" c="dimmed">This minute: {geminiUsage.requests_this_minute}/{geminiUsage.rpm_limit} RPM</Text>
+          </Group>
+        )}
+      </Paper>
 
       <Paper withBorder p="md" radius="md" mt="md">
         <Text fw={600}>Maintenance</Text>

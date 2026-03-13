@@ -24,7 +24,7 @@ import {
   Title,
   Tooltip,
 } from "@mantine/core";
-import { AlertCircle, BarChart3, CheckCircle2, Image as ImageIcon, Info, MoreVertical, Pencil, Plus, RefreshCw, Star, Trash2 } from "lucide-react";
+import { AlertCircle, BarChart3, CheckCircle2, Image as ImageIcon, Info, MoreVertical, Pencil, Play, Plus, RefreshCw, Star, Trash2 } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import {
@@ -34,6 +34,7 @@ import {
   getCompanies,
   refreshAllCompanyLogos,
   refreshCompanyLogo,
+  testFetchCompany,
   updateCompany,
 } from "../api";
 
@@ -69,6 +70,7 @@ const INDUSTRY_OPTIONS = [
 const emptyForm = {
   name: "",
   careers_url: "",
+  search_url: "",
   industry: [],
   notes: "",
   followed: true,
@@ -124,6 +126,7 @@ export default function CompaniesPage() {
   const [followingId, setFollowingId] = useState(null);
   const [refreshingLogoId, setRefreshingLogoId] = useState(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
+  const [testingCompanyId, setTestingCompanyId] = useState(null);
 
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -258,6 +261,7 @@ export default function CompaniesPage() {
     setModalForm({
       name: company.name,
       careers_url: company.careers_url || "",
+      search_url: company.search_url || "",
       industry: parseIndustry(company.industry),
       notes: company.notes || "",
       followed: Boolean(company.followed),
@@ -277,6 +281,7 @@ export default function CompaniesPage() {
       const payload = {
         ...modalForm,
         careers_url: modalForm.careers_url || null,
+        search_url: modalForm.search_url || null,
         industry: serializeIndustry(modalForm.industry),
         notes: modalForm.notes || null,
       };
@@ -410,6 +415,23 @@ export default function CompaniesPage() {
     }
   }
 
+  async function onTestFetch(company) {
+    if (typeof company.id !== "number") return;
+    setTestingCompanyId(company.id);
+    try {
+      const result = await testFetchCompany(company.id);
+      if (result.errors && result.errors.length > 0) {
+        showAction(`Test fetch for ${company.name}: ${result.errors.join("; ")}`, "error");
+      } else {
+        showAction(`Test fetch for ${company.name}: found ${result.postings_found} posting(s) via ${result.portal_type || "adapter"}.`);
+      }
+    } catch (err) {
+      showAction(`Test fetch failed for ${company.name}: ${err.message}`, "error");
+    } finally {
+      setTestingCompanyId(null);
+    }
+  }
+
   const isManualPlaceholder = editingId
     ? items.find((c) => c.id === editingId)?.notes === "Created from manual comparison input"
     : false;
@@ -504,7 +526,7 @@ export default function CompaniesPage() {
               label="Followed only"
               size="xs"
               checked={filterFollowed}
-              onChange={(e) => setFilterFollowed(e.currentTarget.checked)}
+              onChange={(e) => { const c = e.currentTarget.checked; setFilterFollowed(c); }}
             />
             <Button size="xs" variant="light" leftSection={<RefreshCw size={14} />} onClick={onRefreshAllLogos} loading={refreshingAll}>
               Refresh logos
@@ -594,6 +616,13 @@ export default function CompaniesPage() {
                           >
                             Refresh logo
                           </Menu.Item>
+                          <Menu.Item
+                            leftSection={<Play size={14} />}
+                            onClick={() => onTestFetch(company)}
+                            disabled={testingCompanyId === company.id || !company.careers_url}
+                          >
+                            {testingCompanyId === company.id ? "Testing..." : "Test fetch"}
+                          </Menu.Item>
                           <Menu.Divider />
                           <Menu.Item
                             color="red"
@@ -640,6 +669,14 @@ export default function CompaniesPage() {
             placeholder="https://company.com/careers"
             value={modalForm.careers_url}
             onChange={(e) => setModalForm((f) => ({ ...f, careers_url: e.target.value }))}
+            disabled={isSaving}
+          />
+          <TextInput
+            label="Search portal URL"
+            type="url"
+            placeholder="https://company.com/search-jobs?q="
+            value={modalForm.search_url}
+            onChange={(e) => setModalForm((f) => ({ ...f, search_url: e.target.value }))}
             disabled={isSaving}
           />
           <MultiSelect

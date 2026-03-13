@@ -13,7 +13,7 @@ class ComparisonRunRequest(BaseModel):
     title: str | None = None
     description_text: str
     resume_version_id: int
-    evaluation_mode: Literal["chatgpt_api", "local_engine"] = "chatgpt_api"
+    evaluation_mode: Literal["chatgpt_api", "local_engine", "gemini_api"] = "gemini_api"
 
     @model_validator(mode="after")
     def validate_source(self):
@@ -40,7 +40,7 @@ class ComparisonUrlScrapeResponse(BaseModel):
 class ComparisonRunResponse(BaseModel):
     comparison_report_id: int
     job_posting_id: int
-    evaluation_source: Literal["chatgpt_api", "local_engine"]
+    evaluation_source: Literal["chatgpt_api", "local_engine", "gemini_api"] = "gemini_api"
     fallback_reason: str | None = None
     analysis: AnalysisRunResponse
     created_at: str
@@ -53,7 +53,7 @@ class ComparisonReportListItem(BaseModel):
     title: str
     source_url: str | None
     overall_score: float
-    evaluation_source: Literal["chatgpt_api", "local_engine"] = "local_engine"
+    evaluation_source: Literal["chatgpt_api", "local_engine", "gemini_api"] = "gemini_api"
     applied_decision: str
     linked_application_id: int | None
     created_at: str
@@ -74,10 +74,11 @@ class ComparisonReportRead(BaseModel):
     company_name: str
     title: str
     canonical_url: str
-    evaluation_source: Literal["chatgpt_api", "local_engine"] = "local_engine"
+    evaluation_source: Literal["chatgpt_api", "local_engine", "gemini_api"] = "gemini_api"
     chatgpt_prompt_text: str | None = None
     chatgpt_response_present: bool = False
     chatgpt_response_json: dict[str, Any] | None = None
+    llm_response_json: dict[str, Any] | None = None
     applied_decision: str
     linked_application_id: int | None
     created_at: str
@@ -109,6 +110,7 @@ class ComparisonParsedInfoUpdateRequest(BaseModel):
     company_name: str | None = None
     title: str | None = None
     location: str | None = None
+    team: str | None = None
     salary_range: str | None = None
     seniority_level: str | None = None
     workplace_type: str | None = None
@@ -121,6 +123,7 @@ class ComparisonParsedInfoUpdateResponse(BaseModel):
     company_name: str
     title: str
     location: str | None
+    team: str | None
     salary_range: str | None
     seniority_level: str | None
     workplace_type: str | None
